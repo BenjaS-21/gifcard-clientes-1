@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir \"c:\\\\Users\\\\Desarrollo\\\\Desktop\\\\gifcard-clientes\")",
+      "Bash(dir \"c:\\\\Users\\\\Desarrollo\\\\Desktop\\\\gifcard-clientes\\\\backend\")",
+      "Bash(dir \"c:\\\\Users\\\\Desarrollo\\\\Desktop\\\\gifcard-clientes\\\\frontend\")",
+      "Bash(dir \"c:\\\\Users\\\\Desarrollo\\\\Desktop\\\\gifcard-clientes\\\\backend\\\\giftcards\")",
+      "Bash(dir \"c:\\\\Users\\\\Desarrollo\\\\Desktop\\\\gifcard-clientes\\\\backend\\\\config\")",
+      "Bash(dir \"c:\\\\Users\\\\Desarrollo\\\\Desktop\\\\gifcard-clientes\\\\frontend\\\\src\")",
+      "Bash(dir \"c:\\\\Users\\\\Desarrollo\\\\Desktop\\\\gifcard-clientes\\\\frontend\\\\src\\\\views\")",
+      "Bash(dir \"c:\\\\Users\\\\Desarrollo\\\\Desktop\\\\gifcard-clientes\\\\frontend\\\\src\\\\components\")",
+      "Bash(dir \"c:\\\\Users\\\\Desarrollo\\\\Desktop\\\\gifcard-clientes\\\\frontend\\\\src\\\\services\")",
+      "Bash(dir \"c:\\\\Users\\\\Desarrollo\\\\Desktop\\\\gifcard-clientes\\\\frontend\\\\src\\\\router\")",
+      "Bash(dir \"c:\\\\Users\\\\Desarrollo\\\\Desktop\\\\gifcard-clientes\\\\backend\\\\*.py\")"
+    ]
+  }
+}
