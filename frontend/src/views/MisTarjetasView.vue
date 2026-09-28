@@ -54,7 +54,7 @@
           @click="$router.push('/tarjeta/' + gc.id)"
         >
           <!-- Card Visual -->
-          <div class="gift-card" :class="'gc-' + (gc.color || 'black')" :style="cardBgStyle">
+          <div class="gift-card" :class="'gc-' + (gc.color || 'black')" :style="cardBgStyle" :ref="el => cardEls[gc.id] = el">
             <div class="gc-type-label">GIFT CARD</div>
             <div class="gc-pattern"></div>
             <div class="gc-logo">
@@ -84,6 +84,15 @@
             <div class="gc-meta-right">
               <span class="gc-meta-label">Emitida</span>
               <span class="gc-meta-date">{{ formatDate(gc.fecha_emision) }}</span>
+              <button
+                class="gc-download-btn"
+                title="Descargar imagen"
+                :disabled="!!downloading"
+                @click.stop="downloadCard(cardEls[gc.id], gc.numero_tarjeta)"
+              >
+                <span v-if="downloading === gc.numero_tarjeta" class="spinner spinner-sm"></span>
+                <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              </button>
             </div>
           </div>
 
@@ -116,8 +125,11 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../services/api'
+import { useCardDownload } from '../composables/useCardDownload'
 
 const router = useRouter()
+const cardEls = {}
+const { downloading, downloadCard } = useCardDownload()
 const giftcards = ref([])
 const loading = ref(true)
 const cardBgUrl = ref(null)
@@ -325,6 +337,22 @@ const usageColorClass = (gc) => {
   align-items: center;
   gap: 6px;
 }
+.gc-download-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  margin-left: 4px;
+  border-radius: var(--radius-sm);
+  color: var(--color-muted);
+  transition: all var(--transition-base);
+}
+.gc-download-btn:hover:not(:disabled) {
+  color: var(--color-foreground);
+  background: var(--color-surface-hover);
+}
+.gc-download-btn:disabled { opacity: 0.5; cursor: default; }
 .gc-meta-label {
   font-size: 0.6875rem;
   color: var(--color-muted);
