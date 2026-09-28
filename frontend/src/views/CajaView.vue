@@ -78,7 +78,7 @@
       <!-- Hero -->
       <div class="detail-hero">
         <div class="hero-card-wrapper">
-          <div class="gift-card gift-card-detail" :class="'gc-' + (gc.color || 'black')" :style="cardBgStyle">
+          <div class="gift-card gift-card-detail" :class="'gc-' + (gc.color || 'black')" :style="cardBgStyle" ref="cardEl">
             <div class="gc-type-label">GIFT CARD</div>
             <div class="gc-pattern"></div>
             <div class="gc-logo">
@@ -86,7 +86,7 @@
             </div>
             <div class="gc-number">
               {{ gc.numero_tarjeta }}
-              <button class="copy-btn copy-btn-card" @click.stop="copyCode" :title="copied ? 'Copiado!' : 'Copiar código'">
+              <button class="copy-btn copy-btn-card" data-export-ignore @click.stop="copyCode" :title="copied ? 'Copiado!' : 'Copiar código'">
                 <svg v-if="!copied" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                 <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
               </button>
@@ -102,6 +102,16 @@
               </div>
             </div>
           </div>
+
+          <button
+            class="btn btn-outline btn-sm"
+            :disabled="!!downloading"
+            @click="downloadCard(cardEl, gc.numero_tarjeta)"
+          >
+            <span v-if="downloading" class="spinner spinner-sm"></span>
+            <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Descargar imagen
+          </button>
         </div>
 
         <div class="hero-info">
@@ -298,6 +308,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../services/api'
+import { useCardDownload } from '../composables/useCardDownload'
 
 // ── PIN Gate ──
 const CAJA_PIN = 'Damasco2026*'
@@ -342,6 +353,10 @@ const canActivate = computed(() => {
   if (gc.value.cliente_nombre && gc.value.cliente_cedula) return false
   return true
 })
+
+// Descarga de la tarjeta como imagen (para enviar por correo)
+const cardEl = ref(null)
+const { downloading, downloadCard } = useCardDownload()
 
 // Dynamic card background
 const cardBgUrl = ref(null)
@@ -613,7 +628,7 @@ const activateCard = async () => {
   display: grid; grid-template-columns: 420px 1fr;
   gap: var(--space-10); margin-bottom: var(--space-12); align-items: start;
 }
-.hero-card-wrapper { display: flex; justify-content: center; }
+.hero-card-wrapper { display: flex; flex-direction: column; align-items: center; gap: var(--space-4); }
 .gift-card-detail {
   max-width: 420px !important; min-height: 240px;
   padding: var(--space-8) !important; border-radius: 16px !important;
