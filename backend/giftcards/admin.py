@@ -2,7 +2,7 @@
 admin.py — Registro de modelos en el admin de Django.
 """
 from django.contrib import admin
-from .models import CardTemplate, AdminToken
+from .models import CardTemplate, AdminToken, CompanyLogo, CompanyLote
 
 
 @admin.register(CardTemplate)
@@ -15,6 +15,17 @@ class CardTemplateAdmin(admin.ModelAdmin):
     def activate_selected(self, request, queryset):
         if queryset.count() == 1:
             queryset.first().activate()
+
+
+class CompanyLoteInline(admin.TabularInline):
+    model = CompanyLote
+    extra = 1
+
+
+@admin.register(CompanyLogo)
+class CompanyLogoAdmin(admin.ModelAdmin):
+    list_display = ('name', 'pos_x', 'pos_y', 'width', 'created_at')
+    inlines = [CompanyLoteInline]
 
 
 @admin.register(AdminToken)

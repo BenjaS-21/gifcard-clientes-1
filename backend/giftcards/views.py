@@ -22,8 +22,10 @@ from .queries import (
     get_dashboard_stats,
     get_recent_transactions,
     get_top_clients,
+    get_lotes,
     activate_giftcard,
 )
+from .models import CompanyLogo, CompanyLote
 from .utils import execute_query, execute_query_single, execute_query_paginated, execute_update
 
 
@@ -51,6 +53,32 @@ def adjust_saldo_with_pending(giftcard, transactions):
     return {**giftcard, 'saldo': saldo_real}
 
 
+def normalize_lote(lote):
+    """Normaliza un código de lote para compararlo (sin espacios, mayúsculas)."""
+    return str(lote if lote is not None else '').strip().upper()
+
+
+def attach_company_logos(request, giftcards):
+    """
+    Agrega 'empresa_logo' a cada gift card según la empresa dueña de su lote.
+    Queda en None si el lote no pertenece a ninguna empresa con logo.
+    """
+    by_lote = {
+        normalize_lote(cl.lote): cl.company
+        for cl in CompanyLote.objects.select_related('company')
+    }
+    for gc in giftcards:
+        company = by_lote.get(normalize_lote(gc.get('lote')))
+        gc['empresa_logo'] = {
+            'empresa': company.name,
+            'url': request.build_absolute_uri(company.logo.url),
+            'x': company.pos_x,
+            'y': company.pos_y,
+            'width': company.width,
+        } if company and company.logo else None
+    return giftcards
+
+
 # ============================================================
 # Datos mock para desarrollo (cuando USE_MOCK_DATA=true)
 # ============================================================
@@ -61,9 +89,9 @@ MOCK_CLIENTS = [
 ]
 
 MOCK_GIFTCARDS = [
-    {"id": 1, "numero_tarjeta": "DAM-2024-0001", "saldo": 150.00, "saldo_inicial": 200.00, "estado": "activa", "fecha_emision": "2024-01-15", "cliente_id": 1, "cliente_nombre": "María García López", "cliente_cedula": "V-12345678"},
-    {"id": 2, "numero_tarjeta": "DAM-2024-0002", "saldo": 200.00, "saldo_inicial": 200.00, "estado": "activa", "fecha_emision": "2024-01-20", "cliente_id": 1, "cliente_nombre": "María García López", "cliente_cedula": "V-12345678"},
-    {"id": 3, "numero_tarjeta": "DAM-2024-0003", "saldo": 0.00, "saldo_inicial": 100.00, "estado": "agotada", "fecha_emision": "2024-03-10", "cliente_id": 3, "cliente_nombre": "Ana Martínez", "cliente_cedula": "V-34567890"},
+    {"id": 1, "numero_tarjeta": "DAM-2024-0001", "saldo": 150.00, "saldo_inicial": 200.00, "estado": "activa", "fecha_emision": "2024-01-15", "cliente_id": 1, "cliente_nombre": "María García López", "cliente_cedula": "V-12345678", "lote": "LOTE-001"},
+    {"id": 2, "numero_tarjeta": "DAM-2024-0002", "saldo": 200.00, "saldo_inicial": 200.00, "estado": "activa", "fecha_emision": "2024-01-20", "cliente_id": 1, "cliente_nombre": "María García López", "cliente_cedula": "V-12345678", "lote": "LOTE-002"},
+    {"id": 3, "numero_tarjeta": "DAM-2024-0003", "saldo": 0.00, "saldo_inicial": 100.00, "estado": "agotada", "fecha_emision": "2024-03-10", "cliente_id": 3, "cliente_nombre": "Ana Martínez", "cliente_cedula": "V-34567890", "lote": "LOTE-002"},
 ]
 
 MOCK_TRANSACTIONS = [
@@ -161,7 +189,8 @@ class ClientDetailView(APIView):
             client = next((c for c in MOCK_CLIENTS if c['id'] == client_id or c['cedula'] == str(client_id)), None)
             if not client:
                 return Response({'error': 'Cliente no encontrado'}, status=status.HTTP_404_NOT_FOUND)
-            client_cards = [gc for gc in MOCK_GIFTCARDS if gc.get('cliente_cedula') == client.get('cedula')]
+            client_cards = [dict(gc) for gc in MOCK_GIFTCARDS if gc.get('cliente_cedula') == client.get('cedula')]
+            attach_company_logos(request, client_cards)
             return Response({**client, 'giftcards': client_cards})
 
         try:
@@ -190,6 +219,7 @@ class ClientDetailView(APIView):
             # Recalcular saldo total del cliente con los saldos ajustados
             client['saldo_total'] = sum(float(gc.get('saldo', 0)) for gc in giftcards)
 
+            attach_company_logos(request, giftcards)
             return Response({**client, 'giftcards': giftcards})
         except Exception as e:
             return Response(
@@ -219,8 +249,10 @@ class GiftCardListView(APIView):
                 results = [gc for gc in results if gc['estado'] == card_status]
             total = len(results)
             start = (page - 1) * page_size
+            page_results = [dict(gc) for gc in results[start:start + page_size]]
+            attach_company_logos(request, page_results)
             return Response({
-                'results': results[start:start + page_size],
+                'results': page_results,
                 'page': page, 'page_size': page_size,
                 'total': total, 'total_pages': (total + page_size - 1) // page_size,
             })
@@ -239,10 +271,12 @@ class GiftCardListView(APIView):
                         txns = []
                     adjusted = adjust_saldo_with_pending(gc, txns)
                     gc['saldo'] = adjusted['saldo']
+                attach_company_logos(request, data.get('results', []))
                 return Response(data)
 
             query, params = get_all_giftcards(search, card_status)
             data = execute_query_paginated(query, params, page, page_size)
+            attach_company_logos(request, data.get('results', []))
             return Response(data)
         except Exception as e:
             return Response(
@@ -260,6 +294,7 @@ class GiftCardDetailView(APIView):
             if not gc:
                 return Response({'error': 'Gift Card no encontrada'}, status=status.HTTP_404_NOT_FOUND)
             txns = [t for t in MOCK_TRANSACTIONS if t['giftcard_id'] == giftcard_id]
+            gc = attach_company_logos(request, [dict(gc)])[0]
             return Response({**gc, 'transactions': txns})
 
         try:
@@ -281,6 +316,7 @@ class GiftCardDetailView(APIView):
 
             # Ajustar saldo con transacciones pendientes de KLK
             giftcard = adjust_saldo_with_pending(giftcard, transactions)
+            attach_company_logos(request, [giftcard])
             return Response({**giftcard, 'transactions': transactions})
         except Exception as e:
             return Response(
@@ -334,6 +370,7 @@ class GiftCardLookupView(APIView):
                 return Response({'error': 'Tarjeta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
             txns = [t for t in MOCK_TRANSACTIONS if t['giftcard_id'] == gc['id']]
             client = next((c for c in MOCK_CLIENTS if c.get('cedula') == gc.get('cliente_cedula')), None)
+            gc = attach_company_logos(request, [dict(gc)])[0]
             return Response({
                 **gc, 'transactions': txns,
                 'cliente_email': client.get('email', '') if client else '',
@@ -356,6 +393,7 @@ class GiftCardLookupView(APIView):
 
             # Ajustar saldo con transacciones pendientes de KLK
             giftcard = adjust_saldo_with_pending(giftcard, transactions)
+            attach_company_logos(request, [giftcard])
             return Response({**giftcard, 'transactions': transactions})
         except Exception as e:
             return Response(
@@ -721,3 +759,207 @@ class SaveDesignView(APIView):
             'created_at': template.created_at.isoformat(),
             'message': 'Diseño guardado exitosamente'
         }, status=status.HTTP_201_CREATED)
+
+
+# ============================================================
+# ADMIN — Logos de empresas compradoras (por lote)
+# ============================================================
+import json
+import logging
+import re
+from django.db import transaction
+
+LOGO_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml']
+LOGO_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _company_to_dict(request, company):
+    return {
+        'id': company.id,
+        'name': company.name,
+        'logo_url': request.build_absolute_uri(company.logo.url) if company.logo else None,
+        'pos_x': company.pos_x,
+        'pos_y': company.pos_y,
+        'width': company.width,
+        'lotes': [cl.lote for cl in company.lotes.all()],
+        'created_at': company.created_at.isoformat(),
+    }
+
+
+def _parse_lotes(raw):
+    """Acepta una lista, un JSON de lista o texto separado por comas / saltos de línea."""
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            raw = parsed if isinstance(parsed, list) else re.split(r'[,;\n]', raw)
+        except ValueError:
+            raw = re.split(r'[,;\n]', raw)
+    lotes, seen = [], set()
+    for item in raw or []:
+        lote = str(item).strip()
+        key = normalize_lote(lote)
+        if key and key not in seen:
+            seen.add(key)
+            lotes.append(lote)
+    return lotes
+
+
+def _parse_percent(value, default, low, high):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number != number:  # NaN
+        return default
+    return max(low, min(high, number))
+
+
+def _validate_logo_file(logo):
+    """Devuelve un mensaje de error si el archivo no es un logo válido."""
+    if logo.content_type not in LOGO_CONTENT_TYPES:
+        return f'Tipo de archivo no permitido: {logo.content_type}. Use PNG, JPG, WebP o SVG.'
+    if logo.size > LOGO_MAX_BYTES:
+        return 'El logo no puede pesar más de 5 MB.'
+    return None
+
+
+def _delete_logo_file(storage, name):
+    """Borra el archivo del logo; si está en uso (Windows) lo deja huérfano en disco."""
+    try:
+        storage.delete(name)
+    except OSError as e:
+        logging.getLogger(__name__).warning(f"No se pudo borrar el logo {name}: {e}")
+
+
+def _lotes_conflict(lotes, exclude_company=None):
+    """Devuelve un mensaje de error si algún lote ya pertenece a otra empresa."""
+    wanted = {normalize_lote(lote) for lote in lotes}
+    taken = CompanyLote.objects.select_related('company')
+    if exclude_company is not None:
+        taken = taken.exclude(company=exclude_company)
+    for cl in taken:
+        if normalize_lote(cl.lote) in wanted:
+            return f'El lote "{cl.lote}" ya está asignado a {cl.company.name}.'
+    return None
+
+
+class CompanyLogoListView(APIView):
+    """
+    GET  /api/admin/companies/ — Lista de empresas con su logo y lotes
+    POST /api/admin/companies/ — Crear empresa con logo (multipart)
+    """
+
+    @require_admin_token
+    def get(self, request):
+        companies = CompanyLogo.objects.prefetch_related('lotes')
+        return Response([_company_to_dict(request, c) for c in companies])
+
+    @require_admin_token
+    def post(self, request):
+        name = (request.data.get('name') or '').strip()
+        logo = request.FILES.get('logo')
+        lotes = _parse_lotes(request.data.get('lotes'))
+
+        if not name:
+            return Response({'error': 'El nombre de la empresa es requerido'}, status=status.HTTP_400_BAD_REQUEST)
+        if not logo:
+            return Response({'error': 'El logo es requerido'}, status=status.HTTP_400_BAD_REQUEST)
+        error = _validate_logo_file(logo) or _lotes_conflict(lotes)
+        if error:
+            return Response({'error': error}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            company = CompanyLogo.objects.create(
+                name=name,
+                logo=logo,
+                pos_x=_parse_percent(request.data.get('pos_x'), 50, 0, 100),
+                pos_y=_parse_percent(request.data.get('pos_y'), 50, 0, 100),
+                width=_parse_percent(request.data.get('width'), 25, 5, 100),
+            )
+            CompanyLote.objects.bulk_create([CompanyLote(company=company, lote=lote) for lote in lotes])
+
+        return Response(_company_to_dict(request, company), status=status.HTTP_201_CREATED)
+
+
+class CompanyLogoDetailView(APIView):
+    """
+    PATCH  /api/admin/companies/<id>/ — Actualizar nombre, logo, lotes, posición o tamaño
+    DELETE /api/admin/companies/<id>/ — Eliminar empresa y su logo
+    """
+
+    @require_admin_token
+    def patch(self, request, company_id):
+        try:
+            company = CompanyLogo.objects.get(pk=company_id)
+        except CompanyLogo.DoesNotExist:
+            return Response({'error': 'Empresa no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+        logo = request.FILES.get('logo')
+        lotes = _parse_lotes(request.data.get('lotes')) if 'lotes' in request.data else None
+
+        if 'name' in request.data and not (request.data.get('name') or '').strip():
+            return Response({'error': 'El nombre de la empresa es requerido'}, status=status.HTTP_400_BAD_REQUEST)
+        error = (logo and _validate_logo_file(logo)) or (lotes is not None and _lotes_conflict(lotes, company))
+        if error:
+            return Response({'error': error}, status=status.HTTP_400_BAD_REQUEST)
+
+        old_logo_name = company.logo.name if logo and company.logo else None
+        storage = company.logo.storage
+
+        with transaction.atomic():
+            if 'name' in request.data:
+                company.name = request.data.get('name').strip()
+            if logo:
+                company.logo = logo
+            company.pos_x = _parse_percent(request.data.get('pos_x'), company.pos_x, 0, 100)
+            company.pos_y = _parse_percent(request.data.get('pos_y'), company.pos_y, 0, 100)
+            company.width = _parse_percent(request.data.get('width'), company.width, 5, 100)
+            company.save()
+            if lotes is not None:
+                company.lotes.all().delete()
+                CompanyLote.objects.bulk_create([CompanyLote(company=company, lote=lote) for lote in lotes])
+
+        # Borrar de disco el logo anterior
+        if old_logo_name and old_logo_name != company.logo.name:
+            _delete_logo_file(storage, old_logo_name)
+
+        return Response(_company_to_dict(request, company))
+
+    @require_admin_token
+    def delete(self, request, company_id):
+        try:
+            company = CompanyLogo.objects.get(pk=company_id)
+        except CompanyLogo.DoesNotExist:
+            return Response({'error': 'Empresa no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+        logo_name = company.logo.name
+        storage = company.logo.storage
+        company.delete()
+
+        # Borrar archivo de disco
+        if logo_name:
+            _delete_logo_file(storage, logo_name)
+
+        return Response({'message': 'Empresa eliminada'})
+
+
+class LoteListView(APIView):
+    """GET /api/admin/lotes/ — Lotes existentes en SAP, para asociarlos a una empresa."""
+
+    @require_admin_token
+    def get(self, request):
+        if USE_MOCK:
+            counts = {}
+            for gc in MOCK_GIFTCARDS:
+                if gc.get('lote'):
+                    counts[gc['lote']] = counts.get(gc['lote'], 0) + 1
+            return Response([{'lote': lote, 'total_giftcards': n} for lote, n in sorted(counts.items())])
+
+        try:
+            query, params = get_lotes()
+            return Response(execute_query(query, params))
+        except Exception as e:
+            return Response(
+                {'error': f'Error obteniendo lotes: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

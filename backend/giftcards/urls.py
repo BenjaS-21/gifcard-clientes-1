@@ -35,4 +35,9 @@ urlpatterns = [
 
     # Diseñador IA
     path('admin/designs/', views.SaveDesignView.as_view(), name='admin-save-design'),
+
+    # Logos de empresas compradoras
+    path('admin/companies/', views.CompanyLogoListView.as_view(), name='admin-companies'),
+    path('admin/companies/<int:company_id>/', views.CompanyLogoDetailView.as_view(), name='admin-company-detail'),
+    path('admin/lotes/', views.LoteListView.as_view(), name='admin-lotes'),
 ]

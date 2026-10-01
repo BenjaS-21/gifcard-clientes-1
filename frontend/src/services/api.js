@@ -50,4 +50,27 @@ export default {
   saveDesign: (token, data) => api.post('/admin/designs/', data, {
     headers: { Authorization: `Token ${token}` }
   }),
+
+  // Logos de empresas compradoras (por lote)
+  getCompanies: (token) => api.get('/admin/companies/', {
+    headers: { Authorization: `Token ${token}` }
+  }),
+  createCompany: (token, formData) => api.post('/admin/companies/', formData, {
+    headers: {
+      Authorization: `Token ${token}`,
+      'Content-Type': 'multipart/form-data'
+    }
+  }),
+  updateCompany: (token, id, formData) => api.patch(`/admin/companies/${id}/`, formData, {
+    headers: {
+      Authorization: `Token ${token}`,
+      'Content-Type': 'multipart/form-data'
+    }
+  }),
+  deleteCompany: (token, id) => api.delete(`/admin/companies/${id}/`, {
+    headers: { Authorization: `Token ${token}` }
+  }),
+  getLotes: (token) => api.get('/admin/lotes/', {
+    headers: { Authorization: `Token ${token}` }
+  }),
 }

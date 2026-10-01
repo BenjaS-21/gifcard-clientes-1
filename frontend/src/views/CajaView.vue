@@ -84,6 +84,7 @@
             <div class="gc-logo">
               <img src="@/assets/img/logo-damasco-white.svg" alt="Damasco" class="gc-logo-img" />
             </div>
+            <CardCompanyLogo :logo="gc.empresa_logo" />
             <div class="gc-number">
               {{ gc.numero_tarjeta }}
               <button class="copy-btn copy-btn-card" data-export-ignore @click.stop="copyCode" :title="copied ? 'Copiado!' : 'Copiar código'">
@@ -309,6 +310,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../services/api'
 import { useCardDownload } from '../composables/useCardDownload'
+import CardCompanyLogo from '../components/ui/CardCompanyLogo.vue'
 
 // ── PIN Gate ──
 const CAJA_PIN = 'Damasco2026*'
