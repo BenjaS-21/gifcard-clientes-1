@@ -365,6 +365,16 @@ h4 { font-size: 0.875rem; font-weight: 600; }
   font-size: 0.75rem;
   font-weight: 700;
 }
+/* Logo de la empresa compradora (posición y tamaño en % de la tarjeta) */
+.gift-card .gc-company-logo {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  height: auto;
+  max-width: none;
+  z-index: 2;
+  pointer-events: none;
+  user-select: none;
+}
 .gift-card .gc-number {
   font-family: monospace;
   font-size: 1rem;

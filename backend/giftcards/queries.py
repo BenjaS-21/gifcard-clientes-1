@@ -133,6 +133,22 @@ def get_giftcard_by_number(numero):
     )
 
 
+def get_lotes():
+    """Lotes existentes con su cantidad de gift cards."""
+    return (
+        """
+        SELECT
+            T0."U_Lote"   AS lote,
+            COUNT(*)      AS total_giftcards
+        FROM "@DM_GC_FICHA" T0
+        WHERE T0."U_Lote" IS NOT NULL AND T0."U_Lote" != ''
+        GROUP BY T0."U_Lote"
+        ORDER BY T0."U_Lote" DESC
+        """,
+        []
+    )
+
+
 # ============================================================
 # QUERIES DE TRANSACCIONES (@DM_GC_TRX — child table)
 # ============================================================

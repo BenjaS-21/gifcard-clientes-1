@@ -32,6 +32,43 @@ class CardTemplate(models.Model):
         self.save(update_fields=['is_active'])
 
 
+class CompanyLogo(models.Model):
+    """
+    Logo de la empresa que compra Gift Cards.
+    Se muestra en todas las tarjetas de los lotes asociados a la empresa.
+    Posición y tamaño se guardan en % de la tarjeta para que escalen igual
+    en cualquier tamaño de render.
+    """
+    name = models.CharField(max_length=120, help_text="Nombre de la empresa compradora")
+    logo = models.ImageField(upload_to='company_logos/', help_text="Logo de la empresa")
+    pos_x = models.FloatField(default=50, help_text="Centro del logo en el eje X (% del ancho de la tarjeta)")
+    pos_y = models.FloatField(default=50, help_text="Centro del logo en el eje Y (% del alto de la tarjeta)")
+    width = models.FloatField(default=25, help_text="Ancho del logo (% del ancho de la tarjeta)")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name = 'Logo de Empresa'
+        verbose_name_plural = 'Logos de Empresa'
+
+    def __str__(self):
+        return self.name
+
+
+class CompanyLote(models.Model):
+    """Lote de Gift Cards (U_Lote en SAP) comprado por una empresa."""
+    company = models.ForeignKey(CompanyLogo, on_delete=models.CASCADE, related_name='lotes')
+    lote = models.CharField(max_length=100, unique=True, help_text="Código del lote en SAP (U_Lote)")
+
+    class Meta:
+        ordering = ['lote']
+        verbose_name = 'Lote de Empresa'
+        verbose_name_plural = 'Lotes de Empresa'
+
+    def __str__(self):
+        return f"{self.lote} — {self.company.name}"
+
+
 class AdminToken(models.Model):
     """
     Token de acceso al panel admin de Vue.

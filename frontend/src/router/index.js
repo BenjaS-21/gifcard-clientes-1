@@ -44,6 +44,12 @@ const routes = [
     name: 'AdminDesigner',
     component: () => import('../views/AdminDesignerView.vue'),
     meta: { layout: 'blank' }
+  },
+  {
+    path: '/admin/logos',
+    name: 'AdminLogos',
+    component: () => import('../views/AdminLogosView.vue'),
+    meta: { layout: 'blank' }
   }
 ]
 
