@@ -30,12 +30,16 @@ from .queries import (
     activate_giftcard,
 )
 from .auth import (
+    VENDEDORES_GROUP,
     get_admin_token,
     get_client_cedula,
+    is_vendedor_user,
     make_caja_token,
     make_client_token,
+    make_vendedor_token,
     require_admin_token,
     require_caja,
+    require_vendedor,
 )
 from .models import AdminToken, CardTemplate, CompanyLogo, CompanyLote
 from .utils import execute_query, execute_query_single, execute_query_paginated, execute_update
@@ -1060,23 +1064,193 @@ class CompanyLogoDetailView(APIView):
         return Response({'message': 'Empresa eliminada'})
 
 
+def lotes_response():
+    """Lotes existentes en SAP con su cantidad de tarjetas."""
+    if USE_MOCK:
+        counts = {}
+        for gc in MOCK_GIFTCARDS:
+            if gc.get('lote'):
+                counts[gc['lote']] = counts.get(gc['lote'], 0) + 1
+        return Response([{'lote': lote, 'total_giftcards': n} for lote, n in sorted(counts.items())])
+
+    try:
+        query, params = get_lotes()
+        return Response(execute_query(query, params))
+    except Exception as e:
+        return Response(
+            {'error': f'Error obteniendo lotes: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
 class LoteListView(APIView):
     """GET /api/admin/lotes/ — Lotes existentes en SAP, para asociarlos a una empresa."""
 
     @require_admin_token
     def get(self, request):
+        return lotes_response()
+
+
+# ============================================================
+# VENDEDORES — ven todas las gift cards generadas y las descargan
+# ============================================================
+from django.contrib.auth.models import Group, User, update_last_login
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
+
+VENDEDOR_MAX_PAGE_SIZE = 100
+
+
+class VendedorLoginView(APIView):
+    """POST /api/vendedor/login/ — Login de vendedor con usuario y contraseña."""
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
+    def post(self, request):
+        username = (request.data.get('username') or '').strip()
+        password = request.data.get('password') or ''
+        user = authenticate(username=username, password=password) if username and password else None
+        if not is_vendedor_user(user):
+            return Response({'error': 'Usuario o contraseña incorrectos'}, status=status.HTTP_401_UNAUTHORIZED)
+        update_last_login(None, user)
+        return Response({
+            'token': make_vendedor_token(user),
+            'nombre': user.get_full_name() or user.username,
+        })
+
+
+class VendedorGiftCardListView(APIView):
+    """
+    GET /api/vendedor/giftcards/?search=&status=&lote=&page=&page_size=
+    Todas las gift cards generadas, para descargarlas y enviarlas a los clientes.
+    """
+
+    @require_vendedor
+    def get(self, request):
+        search = (request.query_params.get('search') or '').strip() or None
+        card_status = (request.query_params.get('status') or '').strip() or None
+        lote = (request.query_params.get('lote') or '').strip() or None
+        try:
+            page = max(int(request.query_params.get('page', 1)), 1)
+            page_size = min(max(int(request.query_params.get('page_size', 24)), 1), VENDEDOR_MAX_PAGE_SIZE)
+        except ValueError:
+            return Response({'error': 'Paginación inválida'}, status=status.HTTP_400_BAD_REQUEST)
+
         if USE_MOCK:
-            counts = {}
-            for gc in MOCK_GIFTCARDS:
-                if gc.get('lote'):
-                    counts[gc['lote']] = counts.get(gc['lote'], 0) + 1
-            return Response([{'lote': lote, 'total_giftcards': n} for lote, n in sorted(counts.items())])
+            results = MOCK_GIFTCARDS
+            if search:
+                sl = search.lower()
+                results = [gc for gc in results if any(
+                    sl in str(gc.get(k) or '').lower()
+                    for k in ('numero_tarjeta', 'cliente_nombre', 'cliente_cedula', 'lote')
+                )]
+            if card_status:
+                results = [gc for gc in results if (gc['estado'] or '').upper() == card_status.upper()]
+            if lote:
+                results = [gc for gc in results if normalize_lote(gc.get('lote')) == normalize_lote(lote)]
+            total = len(results)
+            start = (page - 1) * page_size
+            page_results = [dict(gc) for gc in results[start:start + page_size]]
+            attach_company_logos(request, page_results)
+            return Response({
+                'results': page_results,
+                'page': page, 'page_size': page_size,
+                'total': total, 'total_pages': (total + page_size - 1) // page_size,
+            })
 
         try:
-            query, params = get_lotes()
-            return Response(execute_query(query, params))
+            query, params = get_all_giftcards(search, card_status, lote)
+            data = execute_query_paginated(query, params, page, page_size)
+            attach_company_logos(request, data.get('results', []))
+            return Response(data)
         except Exception as e:
             return Response(
-                {'error': f'Error obteniendo lotes: {str(e)}'},
+                {'error': f'Error obteniendo gift cards: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class VendedorLoteListView(APIView):
+    """GET /api/vendedor/lotes/ — Lotes para el filtro del vendedor."""
+
+    @require_vendedor
+    def get(self, request):
+        return lotes_response()
+
+
+def _vendedor_to_dict(user):
+    return {
+        'id': user.id,
+        'username': user.username,
+        'nombre': user.get_full_name(),
+        'is_active': user.is_active,
+        'last_login': user.last_login.isoformat() if user.last_login else None,
+        'date_joined': user.date_joined.isoformat(),
+    }
+
+
+def _password_error(password, user=None):
+    """Mensaje de error si la contraseña no cumple las reglas de Django, o None."""
+    try:
+        validate_password(password, user)
+    except ValidationError as e:
+        return ' '.join(e.messages)
+    return None
+
+
+class VendedorAdminListView(APIView):
+    """
+    GET  /api/admin/vendedores/ — Lista de vendedores
+    POST /api/admin/vendedores/ — Crear vendedor (username, nombre, password)
+    """
+
+    @require_admin_token
+    def get(self, request):
+        users = User.objects.filter(groups__name=VENDEDORES_GROUP).order_by('first_name', 'username')
+        return Response([_vendedor_to_dict(u) for u in users])
+
+    @require_admin_token
+    def post(self, request):
+        username = (request.data.get('username') or '').strip()
+        nombre = (request.data.get('nombre') or '').strip()
+        password = request.data.get('password') or ''
+
+        if not username or not nombre or not password:
+            return Response({'error': 'Usuario, nombre y contraseña son requeridos'}, status=status.HTTP_400_BAD_REQUEST)
+        if User.objects.filter(username__iexact=username).exists():
+            return Response({'error': f'El usuario "{username}" ya existe'}, status=status.HTTP_400_BAD_REQUEST)
+        candidate = User(username=username, first_name=nombre)
+        error = _password_error(password, candidate)
+        if error:
+            return Response({'error': error}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            user = User.objects.create_user(username=username, password=password, first_name=nombre)
+            group, _ = Group.objects.get_or_create(name=VENDEDORES_GROUP)
+            user.groups.add(group)
+        return Response(_vendedor_to_dict(user), status=status.HTTP_201_CREATED)
+
+
+class VendedorAdminDetailView(APIView):
+    """PATCH /api/admin/vendedores/<id>/ — Cambiar nombre, contraseña o activar/desactivar."""
+
+    @require_admin_token
+    def patch(self, request, user_id):
+        user = User.objects.filter(pk=user_id, groups__name=VENDEDORES_GROUP).first()
+        if not user:
+            return Response({'error': 'Vendedor no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+        if 'nombre' in request.data:
+            nombre = (request.data.get('nombre') or '').strip()
+            if not nombre:
+                return Response({'error': 'El nombre es requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            user.first_name = nombre
+        if request.data.get('password'):
+            error = _password_error(request.data['password'], user)
+            if error:
+                return Response({'error': error}, status=status.HTTP_400_BAD_REQUEST)
+            user.set_password(request.data['password'])
+        if 'is_active' in request.data:
+            user.is_active = str(request.data.get('is_active')).lower() in ('true', '1')
+        user.save()
+        return Response(_vendedor_to_dict(user))

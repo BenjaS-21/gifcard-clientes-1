@@ -168,7 +168,7 @@ CORS_ALLOWED_ORIGINS = env_list(
     'CORS_ALLOWED_ORIGINS',
     'https://giftcard.aplicacionesdamasco.com,http://localhost:6643,http://127.0.0.1:6643'
 )
-CORS_ALLOW_HEADERS = (*default_headers, 'x-client-token', 'x-caja-token')
+CORS_ALLOW_HEADERS = (*default_headers, 'x-client-token', 'x-caja-token', 'x-vendedor-token')
 
 # Cloudflare Tunnel — dominios de producción
 CSRF_TRUSTED_ORIGINS = [

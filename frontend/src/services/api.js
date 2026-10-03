@@ -12,6 +12,8 @@ api.interceptors.request.use((config) => {
   if (clientToken) config.headers['X-Client-Token'] = clientToken
   const cajaToken = session.cajaToken()
   if (cajaToken) config.headers['X-Caja-Token'] = cajaToken
+  const vendedorToken = session.vendedorToken()
+  if (vendedorToken) config.headers['X-Vendedor-Token'] = vendedorToken
   return config
 })
 
@@ -24,6 +26,9 @@ api.interceptors.response.use((res) => res, (err) => {
   } else if (code === 'caja_auth') {
     session.clearCaja()
     window.location.reload()
+  } else if (code === 'vendedor_auth') {
+    session.clearVendedor()
+    if (window.location.pathname !== '/vendedor-login') window.location.assign('/vendedor-login')
   } else if (code === 'admin_auth') {
     session.clearAdmin()
   }
@@ -57,6 +62,11 @@ export default {
   // Auth
   login: (data) => api.post('/auth/login/', data),  // sends { identificador }
   cajaLogin: (pin) => api.post('/caja/login/', { pin }),
+
+  // Vendedores
+  vendedorLogin: (username, password) => api.post('/vendedor/login/', { username, password }),
+  getVendedorGiftCards: (params = {}) => api.get('/vendedor/giftcards/', { params }),
+  getVendedorLotes: () => api.get('/vendedor/lotes/'),
   logout: () => api.post('/auth/logout/'),
   checkAuth: () => api.get('/auth/check/'),
 
@@ -106,6 +116,17 @@ export default {
     headers: { Authorization: `Token ${token}` }
   }),
   getLotes: (token) => api.get('/admin/lotes/', {
+    headers: { Authorization: `Token ${token}` }
+  }),
+
+  // Gestión de vendedores (admin)
+  getVendedores: (token) => api.get('/admin/vendedores/', {
+    headers: { Authorization: `Token ${token}` }
+  }),
+  createVendedor: (token, data) => api.post('/admin/vendedores/', data, {
+    headers: { Authorization: `Token ${token}` }
+  }),
+  updateVendedor: (token, id, data) => api.patch(`/admin/vendedores/${id}/`, data, {
     headers: { Authorization: `Token ${token}` }
   }),
 }

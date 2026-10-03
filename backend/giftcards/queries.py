@@ -23,7 +23,7 @@ NOTA: Todos los queries usan '?' como placeholder (pyodbc/ODBC estándar).
 # QUERIES DE GIFT CARDS (@DM_GC_FICHA)
 # ============================================================
 
-def get_all_giftcards(search=None, status=None):
+def get_all_giftcards(search=None, status=None, lote=None):
     """Obtener todas las gift cards con filtros opcionales."""
     query = """
         SELECT
@@ -64,6 +64,10 @@ def get_all_giftcards(search=None, status=None):
     if status:
         query += ' AND T0."U_Estado" = ?'
         params.append(status)
+
+    if lote:
+        query += ' AND T0."U_Lote" = ?'
+        params.append(lote)
 
     query += ' ORDER BY T0."DocEntry" DESC'
 

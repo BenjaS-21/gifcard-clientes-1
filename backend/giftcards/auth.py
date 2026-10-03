@@ -105,3 +105,48 @@ def require_admin_token(view_func):
         request.admin_token = admin_token
         return view_func(self, request, *args, **kwargs)
     return wrapper
+
+
+# ── Vendedor ─────────────────────────────────────────────
+
+VENDEDOR_TOKEN_MAX_AGE = 12 * 60 * 60  # 12 horas
+VENDEDORES_GROUP = 'Vendedores'
+_VENDEDOR_SALT = 'giftcards.vendedor'
+
+
+def is_vendedor_user(user):
+    """Usuario activo del grupo Vendedores (los admin también pueden entrar)."""
+    return bool(user and user.is_active and (user.is_staff or user.groups.filter(name=VENDEDORES_GROUP).exists()))
+
+
+def make_vendedor_token(user):
+    return signing.dumps({'uid': user.pk}, salt=_VENDEDOR_SALT)
+
+
+def get_vendedor(request):
+    """
+    Vendedor autenticado por el header X-Vendedor-Token, o None.
+    Se revisa el usuario en cada petición: si el admin lo desactiva,
+    pierde el acceso de inmediato.
+    """
+    from django.contrib.auth.models import User
+
+    token = request.headers.get('X-Vendedor-Token')
+    if not token:
+        return None
+    try:
+        uid = signing.loads(token, salt=_VENDEDOR_SALT, max_age=VENDEDOR_TOKEN_MAX_AGE).get('uid')
+    except signing.BadSignature:
+        return None
+    user = User.objects.filter(pk=uid).first()
+    return user if is_vendedor_user(user) else None
+
+
+def require_vendedor(view_func):
+    """Decorator: vendedor con sesión vigente (o admin)."""
+    @wraps(view_func)
+    def wrapper(self, request, *args, **kwargs):
+        if not get_vendedor(request) and not get_admin_token(request):
+            return _unauthorized('Tu sesión de vendedor venció. Inicia sesión de nuevo.', 'vendedor_auth')
+        return view_func(self, request, *args, **kwargs)
+    return wrapper

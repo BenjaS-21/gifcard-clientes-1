@@ -37,6 +37,18 @@ export const session = {
   setCajaToken: (token) => write(sessionStorage, 'cajaToken', token),
   clearCaja: () => write(sessionStorage, 'cajaToken', null),
 
+  // Vendedor (localStorage: lo usan a diario; vence en el servidor a las 12 h)
+  vendedorToken: () => read(localStorage, 'vendedorToken'),
+  vendedorNombre: () => read(localStorage, 'vendedorNombre'),
+  setVendedor(token, nombre) {
+    write(localStorage, 'vendedorToken', token)
+    write(localStorage, 'vendedorNombre', nombre)
+  },
+  clearVendedor() {
+    write(localStorage, 'vendedorToken', null)
+    write(localStorage, 'vendedorNombre', null)
+  },
+
   // Admin
   adminToken: () => read(sessionStorage, 'adminToken'),
   setAdminToken: (token) => write(sessionStorage, 'adminToken', token),

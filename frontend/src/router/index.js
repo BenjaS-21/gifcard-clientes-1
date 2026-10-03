@@ -28,6 +28,18 @@ const routes = [
     component: () => import('../views/CajaView.vue')
   },
   {
+    path: '/vendedor-login',
+    name: 'VendedorLogin',
+    component: () => import('../views/VendedorLoginView.vue'),
+    meta: { layout: 'blank' }
+  },
+  {
+    path: '/vendedor',
+    name: 'Vendedor',
+    component: () => import('../views/VendedorView.vue'),
+    meta: { layout: 'blank' }
+  },
+  {
     path: '/admin-login',
     name: 'AdminLogin',
     component: () => import('../views/AdminLoginView.vue'),
@@ -49,6 +61,12 @@ const routes = [
     path: '/admin/logos',
     name: 'AdminLogos',
     component: () => import('../views/AdminLogosView.vue'),
+    meta: { layout: 'blank' }
+  },
+  {
+    path: '/admin/vendedores',
+    name: 'AdminVendedores',
+    component: () => import('../views/AdminVendedoresView.vue'),
     meta: { layout: 'blank' }
   }
 ]
