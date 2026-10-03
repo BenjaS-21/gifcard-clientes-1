@@ -10,11 +10,11 @@
         </div>
       </div>
       <div class="header-right">
-        <router-link :to="`/admin/designer?token=${token}`" class="btn-designer">
+        <router-link to="/admin/designer" class="btn-designer">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
           Diseñador IA
         </router-link>
-        <router-link :to="`/admin/logos?token=${token}`" class="btn-designer">
+        <router-link to="/admin/logos" class="btn-designer">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
           Logos de Empresas
         </router-link>
@@ -168,6 +168,7 @@
 
 <script>
 import api from '@/services/api'
+import { session, takeAdminToken } from '@/services/session'
 
 export default {
   name: 'AdminView',
@@ -191,7 +192,7 @@ export default {
     }
   },
   created() {
-    this.token = this.$route.query.token
+    this.token = takeAdminToken(this.$route, this.$router)
     if (this.token) {
       this.loadTemplates()
     }
@@ -263,6 +264,7 @@ export default {
       })
     },
     logout() {
+      session.clearAdmin()
       this.$router.push('/admin-login')
     },
     getPreviewHtml(code) {

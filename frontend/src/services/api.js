@@ -1,8 +1,33 @@
 import axios from 'axios'
+import { session } from './session'
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || 'https://giftcardbackend.aplicacionesdamasco.com/api',
   headers: { 'Content-Type': 'application/json' }
+})
+
+// Sesiones de cliente y caja en cada petición
+api.interceptors.request.use((config) => {
+  const clientToken = session.clientToken()
+  if (clientToken) config.headers['X-Client-Token'] = clientToken
+  const cajaToken = session.cajaToken()
+  if (cajaToken) config.headers['X-Caja-Token'] = cajaToken
+  return config
+})
+
+// Sesión vencida: volver a pedir login (cliente) o PIN (caja)
+api.interceptors.response.use((res) => res, (err) => {
+  const code = err.response?.status === 401 ? err.response.data?.code : null
+  if (code === 'client_auth') {
+    session.clearClient()
+    if (window.location.pathname !== '/login') window.location.assign('/login')
+  } else if (code === 'caja_auth') {
+    session.clearCaja()
+    window.location.reload()
+  } else if (code === 'admin_auth') {
+    session.clearAdmin()
+  }
+  return Promise.reject(err)
 })
 
 export default {
@@ -31,6 +56,7 @@ export default {
   
   // Auth
   login: (data) => api.post('/auth/login/', data),  // sends { identificador }
+  cajaLogin: (pin) => api.post('/caja/login/', { pin }),
   logout: () => api.post('/auth/logout/'),
   checkAuth: () => api.get('/auth/check/'),
 

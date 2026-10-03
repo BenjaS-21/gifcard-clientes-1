@@ -67,6 +67,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../services/api'
+import { session } from '../services/session'
 import logoDamasco from '@/assets/img/logo-damasco.svg'
 
 const router = useRouter()
@@ -100,8 +101,7 @@ const handleLogin = async () => {
       localStorage.setItem('userType', 'caja')
       router.push({ path: '/caja', query: { numero: data.numero_tarjeta } })
     } else if (data.tipo === 'cliente') {
-      localStorage.setItem('userType', 'cliente')
-      localStorage.setItem('cliente', JSON.stringify(data.cliente))
+      session.setClient(data.cliente, data.token)
       router.push('/')
     }
   } catch (e) {

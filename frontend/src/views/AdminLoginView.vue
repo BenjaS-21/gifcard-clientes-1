@@ -57,6 +57,7 @@
 
 <script>
 import api from '@/services/api'
+import { session } from '@/services/session'
 
 export default {
   name: 'AdminLoginView',
@@ -74,9 +75,9 @@ export default {
       this.loading = true
       try {
         const res = await api.adminLogin(this.username, this.password)
-        const token = res.data.token
-        // Redirigir al panel admin con el token
-        this.$router.push({ path: '/admin', query: { token } })
+        // El token se guarda en la pestaña, no en la URL
+        session.setAdminToken(res.data.token)
+        this.$router.push('/admin')
       } catch (err) {
         this.error = err.response?.data?.error || 'Error al conectar con el servidor'
       } finally {

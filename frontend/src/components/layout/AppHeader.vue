@@ -68,6 +68,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import logoDamasco from '@/assets/img/logo-damasco.svg'
+import { session } from '../../services/session'
 
 const router = useRouter()
 const showMenu = ref(false)
@@ -79,8 +80,8 @@ const userName = ref(isCaja ? 'Cajera' : (cliente?.nombre?.split(' ')[0] || 'Usu
 const userInitial = ref(isCaja ? 'C' : (cliente?.nombre || 'U')[0])
 
 const handleLogout = () => {
-  localStorage.removeItem('cliente')
-  localStorage.removeItem('userType')
+  session.clearClient()
+  session.clearCaja()
   router.push('/login')
 }
 </script>

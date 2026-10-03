@@ -9,8 +9,8 @@
         </div>
       </div>
       <div class="header-right">
-        <router-link :to="`/admin?token=${token}`" class="btn-back">← Panel Admin</router-link>
-        <button class="btn-logout" @click="$router.push('/admin-login')">Cerrar Sesión</button>
+        <router-link to="/admin" class="btn-back">← Panel Admin</router-link>
+        <button class="btn-logout" @click="logout">Cerrar Sesión</button>
       </div>
     </header>
 
@@ -167,6 +167,7 @@
 
 <script>
 import api from '@/services/api'
+import { session, takeAdminToken } from '@/services/session'
 
 const LOGO_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml']
 const LOGO_MAX_BYTES = 5 * 1024 * 1024
@@ -240,7 +241,7 @@ export default {
     }
   },
   created() {
-    this.token = this.$route.query.token
+    this.token = takeAdminToken(this.$route, this.$router)
     if (this.token) {
       this.loadCompanies()
       this.loadLotes()
@@ -251,6 +252,10 @@ export default {
     this.releaseBlob()
   },
   methods: {
+    logout() {
+      session.clearAdmin()
+      this.$router.push('/admin-login')
+    },
     async loadCompanies() {
       this.loading = true
       try {

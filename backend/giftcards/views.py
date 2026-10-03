@@ -5,11 +5,13 @@ Endpoints conectados a SAP (SQL Server) vía pyodbc.
 Si USE_MOCK_DATA=true en .env, usa datos de ejemplo.
 """
 
+import hmac
 import re
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.throttling import ScopedRateThrottle
 from django.conf import settings
 
 from .queries import (
@@ -27,7 +29,15 @@ from .queries import (
     get_lotes,
     activate_giftcard,
 )
-from .models import CompanyLogo, CompanyLote
+from .auth import (
+    get_admin_token,
+    get_client_cedula,
+    make_caja_token,
+    make_client_token,
+    require_admin_token,
+    require_caja,
+)
+from .models import AdminToken, CardTemplate, CompanyLogo, CompanyLote
 from .utils import execute_query, execute_query_single, execute_query_paginated, execute_update
 
 
@@ -89,6 +99,30 @@ def add_card_activity(gc, transactions, owner_cedula):
     return gc
 
 
+def card_belongs_to(giftcard, cedula):
+    """
+    True si la tarjeta es del cliente: está a su nombre o, si la cédula es el
+    RIF de una empresa compradora, pertenece a uno de sus lotes.
+    """
+    if normalize_id(giftcard.get('cliente_cedula')) == normalize_id(cedula):
+        return True
+    company = find_company_by_rif(cedula)
+    if not company:
+        return False
+    return normalize_lote(giftcard.get('lote')) in {normalize_lote(cl.lote) for cl in company.lotes.all()}
+
+
+def client_auth_required():
+    return Response(
+        {'error': 'Tu sesión venció. Inicia sesión de nuevo.', 'code': 'client_auth'},
+        status=status.HTTP_401_UNAUTHORIZED
+    )
+
+
+def card_not_found():
+    return Response({'error': 'Gift Card no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+
 def attach_company_logos(request, giftcards):
     """
     Agrega 'empresa_logo' a cada gift card según la empresa dueña de su lote.
@@ -133,8 +167,9 @@ USE_MOCK = settings.USE_MOCK_DATA
 
 
 class DashboardStatsView(APIView):
-    """GET /api/dashboard/stats/ — Estadísticas generales"""
+    """GET /api/dashboard/stats/ — Estadísticas generales (admin)"""
 
+    @require_admin_token
     def get(self, request):
         if USE_MOCK:
             active = sum(1 for gc in MOCK_GIFTCARDS if gc['estado'] == 'activa')
@@ -181,8 +216,9 @@ class DashboardStatsView(APIView):
 
 
 class ClientListView(APIView):
-    """GET /api/clients/ — Lista de clientes"""
+    """GET /api/clients/ — Lista de clientes (admin)"""
 
+    @require_admin_token
     def get(self, request):
         search = request.query_params.get('search', None)
         page = int(request.query_params.get('page', 1))
@@ -213,8 +249,9 @@ class ClientListView(APIView):
 
 
 class ClientDetailView(APIView):
-    """GET /api/clients/<cedula>/ — Detalle de un cliente por cédula"""
+    """GET /api/clients/<cedula>/ — Detalle de un cliente por cédula (admin)"""
 
+    @require_admin_token
     def get(self, request, client_id):
         if USE_MOCK:
             client = next((c for c in MOCK_CLIENTS if c['id'] == client_id or c['cedula'] == str(client_id)), None)
@@ -260,12 +297,20 @@ class ClientDetailView(APIView):
 
 
 class GiftCardListView(APIView):
-    """GET /api/giftcards/ — Lista de gift cards"""
+    """
+    GET /api/giftcards/ — Lista de gift cards.
+    El cliente solo recibe las suyas (la cédula sale de su token);
+    el admin puede listar todas o filtrar por cédula.
+    """
 
     def get(self, request):
         search = request.query_params.get('search', None)
         card_status = request.query_params.get('status', None)
         cedula = request.query_params.get('cedula', None)
+        if not get_admin_token(request):
+            cedula = get_client_cedula(request)
+            if not cedula:
+                return client_auth_required()
         page = int(request.query_params.get('page', 1))
         page_size = int(request.query_params.get('page_size', 20))
 
@@ -331,13 +376,18 @@ class GiftCardListView(APIView):
 
 
 class GiftCardDetailView(APIView):
-    """GET /api/giftcards/<id>/ — Detalle de una gift card"""
+    """GET /api/giftcards/<id>/ — Detalle de una gift card (del cliente o admin)"""
 
     def get(self, request, giftcard_id):
+        is_admin = bool(get_admin_token(request))
+        cedula = get_client_cedula(request)
+        if not is_admin and not cedula:
+            return client_auth_required()
+
         if USE_MOCK:
             gc = next((g for g in MOCK_GIFTCARDS if g['id'] == giftcard_id), None)
-            if not gc:
-                return Response({'error': 'Gift Card no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+            if not gc or (not is_admin and not card_belongs_to(gc, cedula)):
+                return card_not_found()
             txns = [t for t in MOCK_TRANSACTIONS if t['giftcard_id'] == giftcard_id]
             gc = attach_company_logos(request, [dict(gc)])[0]
             return Response({**gc, 'transactions': txns})
@@ -346,8 +396,8 @@ class GiftCardDetailView(APIView):
             query, params = get_giftcard_detail(giftcard_id)
             giftcard = execute_query_single(query, params)
 
-            if not giftcard:
-                return Response({'error': 'Gift Card no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+            if not giftcard or (not is_admin and not card_belongs_to(giftcard, cedula)):
+                return card_not_found()
 
             # Obtener transacciones SAP + KLK usando el código de tarjeta
             try:
@@ -371,10 +421,18 @@ class GiftCardDetailView(APIView):
 
 
 class GiftCardTransactionsView(APIView):
-    """GET /api/giftcards/<id>/transactions/ — Movimientos de una gift card"""
+    """GET /api/giftcards/<id>/transactions/ — Movimientos de una gift card (del cliente o admin)"""
 
     def get(self, request, giftcard_id):
+        is_admin = bool(get_admin_token(request))
+        cedula = get_client_cedula(request)
+        if not is_admin and not cedula:
+            return client_auth_required()
+
         if USE_MOCK:
+            gc = next((g for g in MOCK_GIFTCARDS if g['id'] == giftcard_id), None)
+            if not gc or (not is_admin and not card_belongs_to(gc, cedula)):
+                return card_not_found()
             txns = [t for t in MOCK_TRANSACTIONS if t['giftcard_id'] == giftcard_id]
             return Response({'results': txns})
 
@@ -382,8 +440,8 @@ class GiftCardTransactionsView(APIView):
             # Obtener el código de la tarjeta para incluir transacciones KLK
             query_gc, params_gc = get_giftcard_detail(giftcard_id)
             giftcard = execute_query_single(query_gc, params_gc)
-            if not giftcard:
-                return Response({'results': [], 'error': 'Gift Card no encontrada'})
+            if not giftcard or (not is_admin and not card_belongs_to(giftcard, cedula)):
+                return card_not_found()
             query, params = get_giftcard_transactions_by_code(giftcard['numero_tarjeta'])
             transactions = execute_query(query, params)
             return Response({'results': transactions})
@@ -395,8 +453,9 @@ class GiftCardTransactionsView(APIView):
 
 
 class GiftCardLookupView(APIView):
-    """GET /api/giftcards/lookup/?numero=XXX — Buscar gift card por número"""
+    """GET /api/giftcards/lookup/?numero=XXX — Buscar gift card por número (caja)"""
 
+    @require_caja
     def get(self, request):
         numero = request.query_params.get('numero', '').strip()
 
@@ -448,8 +507,9 @@ class GiftCardLookupView(APIView):
 
 
 class ActivateGiftCardView(APIView):
-    """POST /api/giftcards/activate/ — Activar gift card (nombre + cédula)"""
+    """POST /api/giftcards/activate/ — Activar gift card (nombre + cédula) (caja)"""
 
+    @require_caja
     def post(self, request):
         codigo = (request.data.get('codigo') or '').strip()
         nombre = (request.data.get('nombre') or '').strip()
@@ -517,8 +577,15 @@ class ActivateGiftCardView(APIView):
             )
 
 
+def client_login_response(client):
+    """Respuesta de login de cliente con su token de sesión."""
+    return Response({'tipo': 'cliente', 'cliente': client, 'token': make_client_token(client['cedula'])})
+
+
 class AuthLoginView(APIView):
     """POST /api/auth/login/ — Login por cédula o número de tarjeta"""
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         identificador = (request.data.get('identificador') or '').strip()
@@ -546,9 +613,9 @@ class AuthLoginView(APIView):
             if not client:
                 company = find_company_by_rif(identificador)
                 if company:
-                    return Response({'tipo': 'cliente', 'cliente': {'cedula': identificador, 'nombre': company.name}})
+                    return client_login_response({'cedula': identificador, 'nombre': company.name})
                 return Response({'error': 'Cédula no registrada'}, status=status.HTTP_404_NOT_FOUND)
-            return Response({'tipo': 'cliente', 'cliente': client})
+            return client_login_response(client)
 
         try:
             # Detectar si es un número de tarjeta o cédula
@@ -567,12 +634,12 @@ class AuthLoginView(APIView):
             client = execute_query_single(query_cl, params_cl)
 
             if client:
-                return Response({'tipo': 'cliente', 'cliente': client})
+                return client_login_response(client)
 
             # Empresa compradora que ya entregó todas sus tarjetas
             company = find_company_by_rif(identificador)
             if company:
-                return Response({'tipo': 'cliente', 'cliente': {'cedula': identificador, 'nombre': company.name}})
+                return client_login_response({'cedula': identificador, 'nombre': company.name})
 
             return Response(
                 {'error': 'No se encontró tarjeta ni cliente con ese identificador'},
@@ -583,6 +650,23 @@ class AuthLoginView(APIView):
                 {'error': f'Error al verificar: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class CajaLoginView(APIView):
+    """POST /api/caja/login/ — Valida el PIN de caja y devuelve un token de sesión."""
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
+    def post(self, request):
+        pin = str(request.data.get('pin') or '')
+        if not settings.CAJA_PIN:
+            return Response(
+                {'error': 'El PIN de caja no está configurado en el servidor (CAJA_PIN).'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+        if not pin or not hmac.compare_digest(pin.encode(), settings.CAJA_PIN.encode()):
+            return Response({'error': 'PIN incorrecto'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'token': make_caja_token()})
 
 
 class AuthLogoutView(APIView):
@@ -603,35 +687,12 @@ class AuthCheckView(APIView):
 # ADMIN — Panel de Templates de Gift Card
 # ============================================================
 from django.contrib.auth import authenticate
-from .models import CardTemplate, AdminToken
-from functools import wraps
-
-
-def require_admin_token(view_func):
-    """Decorator que valida el token admin en Authorization header o query param."""
-    @wraps(view_func)
-    def wrapper(self, request, *args, **kwargs):
-        # Buscar token en header: Authorization: Token <uuid>
-        auth_header = request.headers.get('Authorization', '')
-        token_str = None
-        if auth_header.startswith('Token '):
-            token_str = auth_header.split(' ', 1)[1]
-        # Fallback: query param ?token=<uuid>
-        if not token_str:
-            token_str = request.query_params.get('token')
-        if not token_str:
-            return Response({'error': 'Token requerido'}, status=status.HTTP_401_UNAUTHORIZED)
-        try:
-            admin_token = AdminToken.objects.get(token=token_str, is_active=True)
-        except AdminToken.DoesNotExist:
-            return Response({'error': 'Token inválido o expirado'}, status=status.HTTP_401_UNAUTHORIZED)
-        request.admin_token = admin_token
-        return view_func(self, request, *args, **kwargs)
-    return wrapper
 
 
 class AdminLoginView(APIView):
     """POST /api/admin/login/ — Login con credenciales Django, devuelve token."""
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         username = request.data.get('username', '').strip()

@@ -24,6 +24,9 @@ urlpatterns = [
     path('auth/logout/', views.AuthLogoutView.as_view(), name='auth-logout'),
     path('auth/check/', views.AuthCheckView.as_view(), name='auth-check'),
 
+    # Caja (PIN de cajeras)
+    path('caja/login/', views.CajaLoginView.as_view(), name='caja-login'),
+
     # Card Templates (público)
     path('card-templates/active/', views.ActiveCardTemplateView.as_view(), name='card-template-active'),
 

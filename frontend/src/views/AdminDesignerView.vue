@@ -9,8 +9,8 @@
         </div>
       </div>
       <div class="header-right">
-        <router-link :to="`/admin?token=${token}`" class="btn-back">← Panel Admin</router-link>
-        <button class="btn-logout" @click="$router.push('/admin-login')">Cerrar Sesión</button>
+        <router-link to="/admin" class="btn-back">← Panel Admin</router-link>
+        <button class="btn-logout" @click="logout">Cerrar Sesión</button>
       </div>
     </header>
 
@@ -170,6 +170,7 @@
 
 <script>
 import api from '@/services/api'
+import { session, takeAdminToken } from '@/services/session'
 import torreImg from '@/assets/img/torre-damasco-card.png'
 
 export default {
@@ -235,9 +236,13 @@ export default {
     }
   },
   created() {
-    this.token = this.$route.query.token
+    this.token = takeAdminToken(this.$route, this.$router)
   },
   methods: {
+    logout() {
+      session.clearAdmin()
+      this.$router.push('/admin-login')
+    },
     async saveDesign() {
       this.saveMsg = null
       this.saving = true
