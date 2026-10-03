@@ -51,6 +51,10 @@
             <label class="ctrl-label">Nombre de la empresa</label>
             <input v-model="form.name" type="text" placeholder="Ej: Empresas Polar" class="ctrl-input" />
 
+            <label class="ctrl-label">RIF de la empresa (opcional)</label>
+            <input v-model="form.rif" type="text" placeholder="Ej: J-00000000-0" class="ctrl-input" />
+            <p class="ctrl-hint">Al entrar al portal con este RIF, la empresa ve todas las tarjetas de sus lotes, también las que ya entregó.</p>
+
             <label class="ctrl-label">Logo</label>
             <label class="file-input-label" :class="{ 'has-file': form.file }">
               {{ form.file ? form.file.name : (form.id ? 'Cambiar logo' : 'Seleccionar logo') }}
@@ -171,6 +175,7 @@ const MAX_SUGGESTIONS = 12
 const emptyForm = () => ({
   id: null,
   name: '',
+  rif: '',
   lotes: [],
   pos_x: 50,
   pos_y: 50,
@@ -284,6 +289,7 @@ export default {
       this.form = {
         id: c.id,
         name: c.name,
+        rif: c.rif || '',
         lotes: [...c.lotes],
         pos_x: c.pos_x,
         pos_y: c.pos_y,
@@ -362,6 +368,7 @@ export default {
       try {
         const fd = new FormData()
         fd.append('name', this.form.name.trim())
+        fd.append('rif', this.form.rif.trim())
         fd.append('lotes', JSON.stringify(this.form.lotes))
         fd.append('pos_x', this.form.pos_x)
         fd.append('pos_y', this.form.pos_y)

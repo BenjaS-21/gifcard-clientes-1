@@ -5,6 +5,8 @@ Endpoints conectados a SAP (SQL Server) vía pyodbc.
 Si USE_MOCK_DATA=true en .env, usa datos de ejemplo.
 """
 
+import re
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -56,6 +58,35 @@ def adjust_saldo_with_pending(giftcard, transactions):
 def normalize_lote(lote):
     """Normaliza un código de lote para compararlo (sin espacios, mayúsculas)."""
     return str(lote if lote is not None else '').strip().upper()
+
+
+def normalize_id(value):
+    """Normaliza una cédula o RIF para compararlos (sin guiones ni espacios, mayúsculas)."""
+    return re.sub(r'[^0-9A-Z]', '', str(value or '').upper())
+
+
+def find_company_by_rif(identificador):
+    """Empresa compradora cuyo RIF coincide con el identificador, o None."""
+    key = normalize_id(identificador)
+    if not key:
+        return None
+    for company in CompanyLogo.objects.exclude(rif='').prefetch_related('lotes'):
+        if normalize_id(company.rif) == key:
+            return company
+    return None
+
+
+def add_card_activity(gc, transactions, owner_cedula):
+    """
+    Agrega datos de actividad a la gift card para los KPI del cliente:
+    cantidad de usos, fecha del último uso y si ya fue entregada
+    (está a nombre de alguien distinto a quien consulta).
+    """
+    debitos = [tx for tx in transactions if (tx.get('tipo', '') or '').upper() in DEBIT_TYPES]
+    gc['num_usos'] = len(debitos)
+    gc['ultimo_uso'] = max((str(tx['fecha']) for tx in debitos if tx.get('fecha')), default=None)
+    gc['entregada'] = normalize_id(gc.get('cliente_cedula')) != normalize_id(owner_cedula)
+    return gc
 
 
 def attach_company_logos(request, giftcards):
@@ -241,7 +272,13 @@ class GiftCardListView(APIView):
         if USE_MOCK:
             results = MOCK_GIFTCARDS
             if cedula:
-                results = [gc for gc in results if gc.get('cliente_cedula', '').lower() == cedula.lower()]
+                company = find_company_by_rif(cedula)
+                company_lotes = {normalize_lote(cl.lote) for cl in company.lotes.all()} if company else set()
+                results = [
+                    gc for gc in results
+                    if gc.get('cliente_cedula', '').lower() == cedula.lower()
+                    or normalize_lote(gc.get('lote')) in company_lotes
+                ]
             if search:
                 sl = search.lower()
                 results = [gc for gc in results if sl in gc['numero_tarjeta'].lower() or sl in gc['cliente_nombre'].lower()]
@@ -250,6 +287,9 @@ class GiftCardListView(APIView):
             total = len(results)
             start = (page - 1) * page_size
             page_results = [dict(gc) for gc in results[start:start + page_size]]
+            if cedula:
+                for gc in page_results:
+                    add_card_activity(gc, [t for t in MOCK_TRANSACTIONS if t['giftcard_id'] == gc['id']], cedula)
             attach_company_logos(request, page_results)
             return Response({
                 'results': page_results,
@@ -258,9 +298,13 @@ class GiftCardListView(APIView):
             })
 
         try:
-            # Si viene cédula, buscar gift cards del cliente
+            # Si viene cédula, buscar gift cards del cliente.
+            # Si es el RIF de una empresa compradora, incluye todas las
+            # tarjetas de sus lotes (también las ya entregadas a empleados).
             if cedula:
-                query, params = get_client_giftcards(cedula)
+                company = find_company_by_rif(cedula)
+                company_lotes = [cl.lote for cl in company.lotes.all()] if company else None
+                query, params = get_client_giftcards(cedula, company_lotes)
                 data = execute_query_paginated(query, params, page, page_size)
                 # Ajustar saldo de cada GC con transacciones pendientes de KLK
                 for gc in data.get('results', []):
@@ -271,6 +315,7 @@ class GiftCardListView(APIView):
                         txns = []
                     adjusted = adjust_saldo_with_pending(gc, txns)
                     gc['saldo'] = adjusted['saldo']
+                    add_card_activity(gc, txns, cedula)
                 attach_company_logos(request, data.get('results', []))
                 return Response(data)
 
@@ -499,6 +544,9 @@ class AuthLoginView(APIView):
                 None
             )
             if not client:
+                company = find_company_by_rif(identificador)
+                if company:
+                    return Response({'tipo': 'cliente', 'cliente': {'cedula': identificador, 'nombre': company.name}})
                 return Response({'error': 'Cédula no registrada'}, status=status.HTTP_404_NOT_FOUND)
             return Response({'tipo': 'cliente', 'cliente': client})
 
@@ -520,6 +568,11 @@ class AuthLoginView(APIView):
 
             if client:
                 return Response({'tipo': 'cliente', 'cliente': client})
+
+            # Empresa compradora que ya entregó todas sus tarjetas
+            company = find_company_by_rif(identificador)
+            if company:
+                return Response({'tipo': 'cliente', 'cliente': {'cedula': identificador, 'nombre': company.name}})
 
             return Response(
                 {'error': 'No se encontró tarjeta ni cliente con ese identificador'},
@@ -766,7 +819,6 @@ class SaveDesignView(APIView):
 # ============================================================
 import json
 import logging
-import re
 from django.db import transaction
 
 LOGO_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml']
@@ -777,6 +829,7 @@ def _company_to_dict(request, company):
     return {
         'id': company.id,
         'name': company.name,
+        'rif': company.rif,
         'logo_url': request.build_absolute_uri(company.logo.url) if company.logo else None,
         'pos_x': company.pos_x,
         'pos_y': company.pos_y,
@@ -871,6 +924,7 @@ class CompanyLogoListView(APIView):
         with transaction.atomic():
             company = CompanyLogo.objects.create(
                 name=name,
+                rif=(request.data.get('rif') or '').strip(),
                 logo=logo,
                 pos_x=_parse_percent(request.data.get('pos_x'), 50, 0, 100),
                 pos_y=_parse_percent(request.data.get('pos_y'), 50, 0, 100),
@@ -909,6 +963,8 @@ class CompanyLogoDetailView(APIView):
         with transaction.atomic():
             if 'name' in request.data:
                 company.name = request.data.get('name').strip()
+            if 'rif' in request.data:
+                company.rif = (request.data.get('rif') or '').strip()
             if logo:
                 company.logo = logo
             company.pos_x = _parse_percent(request.data.get('pos_x'), company.pos_x, 0, 100)

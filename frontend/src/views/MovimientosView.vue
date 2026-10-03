@@ -122,8 +122,7 @@ onMounted(async () => {
   }
   try {
     const cliente = JSON.parse(clienteStr)
-    const res = await api.getGiftCards({ cedula: cliente.cedula })
-    const cards = res.data.results || []
+    const cards = await api.getAllGiftCards({ cedula: cliente.cedula })
     const txPromises = cards.map(gc =>
       api.getGiftCard(gc.id).then(r => (r.data.transactions || []).map(tx => ({
         ...tx,

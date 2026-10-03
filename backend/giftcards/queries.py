@@ -323,10 +323,13 @@ def get_client_detail(cedula):
     )
 
 
-def get_client_giftcards(cedula):
-    """Gift cards de un cliente por cédula."""
-    return (
-        """
+def get_client_giftcards(cedula, lotes=None):
+    """
+    Gift cards de un cliente por cédula.
+    Si se pasan lotes (empresa compradora), incluye también todas las tarjetas
+    de esos lotes aunque ya estén a nombre de otro beneficiario.
+    """
+    query = """
         SELECT
             T0."DocEntry"            AS id,
             T0."U_Codigo"            AS numero_tarjeta,
@@ -337,15 +340,25 @@ def get_client_giftcards(cedula):
             T0."U_FechaGeneracion"   AS fecha_emision,
             T0."U_FechaVenta"        AS fecha_venta,
             T0."U_FechaExpiracion"   AS fecha_vencimiento,
+            T0."U_FechaActivacion"   AS fecha_activacion,
             T0."U_Canal"             AS canal,
             T0."U_Sucursal"          AS sucursal,
-            T0."U_ProductoCode"      AS producto_code
+            T0."U_ProductoCode"      AS producto_code,
+            T0."U_Beneficiario"      AS cliente_nombre,
+            T0."U_CedulaBenef"       AS cliente_cedula
         FROM "@DM_GC_FICHA" T0
         WHERE T0."U_CedulaBenef" = ?
-        ORDER BY T0."DocEntry" DESC
-        """,
-        [cedula]
-    )
+    """
+    params = [cedula]
+
+    if lotes:
+        placeholders = ', '.join('?' for _ in lotes)
+        query += f' OR T0."U_Lote" IN ({placeholders})'
+        params.extend(lotes)
+
+    query += ' ORDER BY T0."DocEntry" DESC'
+
+    return (query, params)
 
 
 # ============================================================

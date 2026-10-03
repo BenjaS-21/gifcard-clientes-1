@@ -15,6 +15,15 @@ export default {
   
   // Gift Cards
   getGiftCards: (params = {}) => api.get('/giftcards/', { params }),
+  // Todas las páginas de gift cards (el endpoint pagina de 20 en 20 por defecto)
+  getAllGiftCards: async (params = {}) => {
+    const results = []
+    for (let page = 1; ; page++) {
+      const res = await api.get('/giftcards/', { params: { ...params, page, page_size: 100 } })
+      results.push(...(res.data.results || []))
+      if (page >= (res.data.total_pages || 1)) return results
+    }
+  },
   getGiftCard: (id) => api.get(`/giftcards/${id}/`),
   getGiftCardTransactions: (id) => api.get(`/giftcards/${id}/transactions/`),
   lookupGiftCard: (numero) => api.get('/giftcards/lookup/', { params: { numero } }),
