@@ -16,7 +16,10 @@
           autofocus
         />
         <p v-if="pinError" class="pin-error">{{ pinError }}</p>
-        <button type="submit" class="btn btn-primary btn-lg pin-submit">Ingresar</button>
+        <button type="submit" class="btn btn-primary btn-lg pin-submit" :disabled="pinLoading || !pinInput">
+          <span v-if="pinLoading" class="spinner spinner-sm"></span>
+          <span v-else>Ingresar</span>
+        </button>
       </form>
     </div>
   </div>
@@ -309,23 +312,35 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../services/api'
+import { session } from '../services/session'
 import { useCardDownload } from '../composables/useCardDownload'
 import CardCompanyLogo from '../components/ui/CardCompanyLogo.vue'
 
-// ── PIN Gate ──
-const CAJA_PIN = 'Damasco2026*'
-const cajaAuthed = ref(sessionStorage.getItem('cajaAuth') === 'true')
+// ── PIN Gate (el PIN se valida en el servidor) ──
+const cajaAuthed = ref(!!session.cajaToken())
 const pinInput = ref('')
 const pinError = ref('')
+const pinLoading = ref(false)
 
-const validatePin = () => {
-  if (pinInput.value === CAJA_PIN) {
-    sessionStorage.setItem('cajaAuth', 'true')
+const validatePin = async () => {
+  pinLoading.value = true
+  pinError.value = ''
+  try {
+    const res = await api.cajaLogin(pinInput.value)
+    session.setCajaToken(res.data.token)
     cajaAuthed.value = true
-    pinError.value = ''
-  } else {
-    pinError.value = 'PIN incorrecto'
+    // Si llegó con ?numero= (login por número de tarjeta), buscarla ya
+    if (route.query.numero && !gc.value) {
+      numeroTarjeta.value = route.query.numero
+      buscarTarjeta()
+    }
+  } catch (e) {
+    pinError.value = e.response?.status === 429
+      ? 'Demasiados intentos. Espera un minuto.'
+      : (e.response?.data?.error || 'No se pudo validar el PIN')
     pinInput.value = ''
+  } finally {
+    pinLoading.value = false
   }
 }
 
@@ -371,7 +386,7 @@ onMounted(async () => {
     if (tpl.data.active) cardBgUrl.value = tpl.data.image_url
   } catch (e) { /* usa imagen por defecto */ }
   const num = route.query.numero
-  if (num) {
+  if (num && cajaAuthed.value) {
     numeroTarjeta.value = num
     buscarTarjeta()
   }

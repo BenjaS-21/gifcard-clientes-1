@@ -40,6 +40,10 @@ class CompanyLogo(models.Model):
     en cualquier tamaño de render.
     """
     name = models.CharField(max_length=120, help_text="Nombre de la empresa compradora")
+    rif = models.CharField(
+        max_length=30, blank=True, default='',
+        help_text="RIF con el que la empresa entra al portal; con él ve todas las tarjetas de sus lotes"
+    )
     logo = models.ImageField(upload_to='company_logos/', help_text="Logo de la empresa")
     pos_x = models.FloatField(default=50, help_text="Centro del logo en el eje X (% del ancho de la tarjeta)")
     pos_y = models.FloatField(default=50, help_text="Centro del logo en el eje Y (% del alto de la tarjeta)")

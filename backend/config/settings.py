@@ -3,17 +3,33 @@ Django settings for Damasco Gift Cards Portal.
 """
 
 import os
+import secrets
+import warnings
 from pathlib import Path
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
-SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-damasco-giftcards-change-this-in-production')
 
-DEBUG = True
+def env_list(name, default):
+    """Lista separada por comas desde .env (ej: HOSTS=a.com,b.com)."""
+    return [v.strip() for v in os.getenv(name, default).split(',') if v.strip()]
 
-ALLOWED_HOSTS = ['*']
+
+# Firma las sesiones de clientes y caja: en producción DEBE venir de .env.
+# Sin ella se genera una al arrancar (las sesiones se pierden al reiniciar).
+SECRET_KEY = os.getenv('SECRET_KEY')
+if not SECRET_KEY:
+    SECRET_KEY = secrets.token_urlsafe(50)
+    warnings.warn('SECRET_KEY no está en .env: se generó una temporal; las sesiones se pierden al reiniciar.')
+
+DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
+
+ALLOWED_HOSTS = env_list('ALLOWED_HOSTS', 'giftcardbackend.aplicacionesdamasco.com,localhost,127.0.0.1')
+
+# PIN de las cajeras para entrar a /caja (se valida en el servidor)
+CAJA_PIN = os.getenv('CAJA_PIN', '')
 
 # ============================================================
 # CONEXIÓN SAP (SQL Server) — leída desde .env
@@ -145,8 +161,14 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# CORS — Permitir todo en desarrollo
-CORS_ALLOW_ALL_ORIGINS = True
+# CORS — solo el frontend del portal
+from corsheaders.defaults import default_headers  # noqa: E402
+
+CORS_ALLOWED_ORIGINS = env_list(
+    'CORS_ALLOWED_ORIGINS',
+    'https://giftcard.aplicacionesdamasco.com,http://localhost:6643,http://127.0.0.1:6643'
+)
+CORS_ALLOW_HEADERS = (*default_headers, 'x-client-token', 'x-caja-token', 'x-vendedor-token')
 
 # Cloudflare Tunnel — dominios de producción
 CSRF_TRUSTED_ORIGINS = [
@@ -162,4 +184,8 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
+    # Límite de intentos de login (clientes, caja y admin) por IP
+    'DEFAULT_THROTTLE_RATES': {
+        'login': '10/min',
+    },
 }

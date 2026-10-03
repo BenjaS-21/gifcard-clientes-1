@@ -9,8 +9,8 @@
         </div>
       </div>
       <div class="header-right">
-        <router-link :to="`/admin?token=${token}`" class="btn-back">← Panel Admin</router-link>
-        <button class="btn-logout" @click="$router.push('/admin-login')">Cerrar Sesión</button>
+        <router-link to="/admin" class="btn-back">← Panel Admin</router-link>
+        <button class="btn-logout" @click="logout">Cerrar Sesión</button>
       </div>
     </header>
 
@@ -51,6 +51,10 @@
             <label class="ctrl-label">Nombre de la empresa</label>
             <input v-model="form.name" type="text" placeholder="Ej: Empresas Polar" class="ctrl-input" />
 
+            <label class="ctrl-label">RIF de la empresa (opcional)</label>
+            <input v-model="form.rif" type="text" placeholder="Ej: J-00000000-0" class="ctrl-input" />
+            <p class="ctrl-hint">Al entrar al portal con este RIF, la empresa ve todas las tarjetas de sus lotes, también las que ya entregó.</p>
+
             <label class="ctrl-label">Logo</label>
             <label class="file-input-label" :class="{ 'has-file': form.file }">
               {{ form.file ? form.file.name : (form.id ? 'Cambiar logo' : 'Seleccionar logo') }}
@@ -58,38 +62,59 @@
             </label>
             <p class="ctrl-hint">PNG, JPG, WebP o SVG (máx. 5 MB). Recomendado: PNG o SVG con fondo transparente.</p>
 
-            <label class="ctrl-label">Lotes de la empresa</label>
+            <label class="ctrl-label">
+              Lotes de la empresa
+              <span v-if="form.lotes.length" class="lote-count">{{ form.lotes.length }} seleccionados</span>
+            </label>
             <div class="lote-chips" v-if="form.lotes.length">
               <span v-for="l in form.lotes" :key="l" class="lote-chip">
                 {{ l }}
                 <button type="button" @click="removeLote(l)" :title="`Quitar lote ${l}`">&times;</button>
               </span>
+              <button type="button" class="lote-clear" @click="form.lotes = []">Quitar todos</button>
             </div>
             <div class="lote-add-row">
               <input
                 v-model="loteInput"
                 type="text"
-                placeholder="Código de lote y Enter"
+                placeholder="Buscar lote, o escribir/pegar varios y Enter"
                 class="ctrl-input"
                 @keydown.enter.prevent="addLote(loteInput)"
+                @paste="onLotePaste"
               />
               <button type="button" class="btn-add" @click="addLote(loteInput)" :disabled="!loteInput.trim()">Agregar</button>
             </div>
-            <div class="lote-suggestions" v-if="suggestions.length">
-              <button
-                v-for="s in suggestions"
-                :key="s.lote"
-                type="button"
-                class="lote-suggestion"
-                :disabled="!!s.owner"
-                :title="s.owner ? `Asignado a ${s.owner}` : 'Agregar lote'"
-                @click="addLote(s.lote)"
-              >
-                {{ s.lote }}
-                <small>{{ s.owner ? s.owner : s.total_giftcards + ' tarj.' }}</small>
-              </button>
+
+            <div v-if="lotePicker.items.length" class="lote-picker">
+              <div class="lote-picker-head">
+                <span>{{ loteInput.trim() ? `${lotePicker.total} coinciden` : `${lotePicker.total} lotes en SAP` }}</span>
+                <button
+                  v-if="lotePicker.selectable"
+                  type="button"
+                  class="lote-select-all"
+                  @click="selectAllMatching"
+                >
+                  Seleccionar {{ lotePicker.selectable === 1 ? 'el que coincide' : `los ${lotePicker.selectable} que coinciden` }}
+                </button>
+              </div>
+              <div class="lote-picker-list">
+                <label
+                  v-for="s in lotePicker.items"
+                  :key="s.lote"
+                  class="lote-option"
+                  :class="{ 'is-taken': s.owner, 'is-checked': s.checked }"
+                  :title="s.owner ? `Asignado a ${s.owner}` : ''"
+                >
+                  <input type="checkbox" :checked="s.checked" :disabled="!!s.owner" @change="toggleLote(s.lote)" />
+                  <span class="lote-option-code">{{ s.lote }}</span>
+                  <small>{{ s.owner ? s.owner : s.total_giftcards + ' tarj.' }}</small>
+                </label>
+              </div>
+              <p v-if="lotePicker.total > lotePicker.items.length" class="ctrl-hint">
+                Mostrando {{ lotePicker.items.length }} de {{ lotePicker.total }}. Escribe para filtrar.
+              </p>
             </div>
-            <p class="ctrl-hint">Todas las tarjetas de estos lotes saldrán con el logo.</p>
+            <p class="ctrl-hint">Todas las tarjetas de estos lotes saldrán con el logo. Puedes pegar una lista de lotes copiada de Excel.</p>
           </section>
 
           <section class="ctrl-section">
@@ -163,14 +188,16 @@
 
 <script>
 import api from '@/services/api'
+import { session, takeAdminToken } from '@/services/session'
 
 const LOGO_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml']
 const LOGO_MAX_BYTES = 5 * 1024 * 1024
-const MAX_SUGGESTIONS = 12
+const MAX_PICKER_ITEMS = 200
 
 const emptyForm = () => ({
   id: null,
   name: '',
+  rif: '',
   lotes: [],
   pos_x: 50,
   pos_y: 50,
@@ -224,18 +251,26 @@ export default {
       }
       return taken
     },
-    suggestions() {
+    // Lotes de SAP que coinciden con la búsqueda, marcados si ya están elegidos
+    lotePicker() {
       const selected = new Set(this.form.lotes.map(l => l.toUpperCase()))
       const text = this.loteInput.trim().toUpperCase()
-      return this.availableLotes
-        .filter(l => !selected.has(String(l.lote).toUpperCase()))
-        .filter(l => !text || String(l.lote).toUpperCase().includes(text))
-        .slice(0, MAX_SUGGESTIONS)
-        .map(l => ({ ...l, lote: String(l.lote), owner: this.lotesTaken[String(l.lote).toUpperCase()] || null }))
+      const matching = this.availableLotes
+        .map(l => {
+          const lote = String(l.lote)
+          const key = lote.toUpperCase()
+          return { ...l, lote, checked: selected.has(key), owner: this.lotesTaken[key] || null }
+        })
+        .filter(l => !text || l.lote.toUpperCase().includes(text))
+      return {
+        total: matching.length,
+        selectable: matching.filter(l => !l.checked && !l.owner).length,
+        items: matching.slice(0, MAX_PICKER_ITEMS)
+      }
     }
   },
   created() {
-    this.token = this.$route.query.token
+    this.token = takeAdminToken(this.$route, this.$router)
     if (this.token) {
       this.loadCompanies()
       this.loadLotes()
@@ -246,6 +281,10 @@ export default {
     this.releaseBlob()
   },
   methods: {
+    logout() {
+      session.clearAdmin()
+      this.$router.push('/admin-login')
+    },
     async loadCompanies() {
       this.loading = true
       try {
@@ -284,6 +323,7 @@ export default {
       this.form = {
         id: c.id,
         name: c.name,
+        rif: c.rif || '',
         lotes: [...c.lotes],
         pos_x: c.pos_x,
         pos_y: c.pos_y,
@@ -312,9 +352,37 @@ export default {
       this.form.previewUrl = this.blobUrl
       this.msg = null
     },
+    // Marcar/desmarcar en la lista no borra la búsqueda, para elegir varios seguidos
+    toggleLote(lote) {
+      if (this.form.lotes.some(l => l.toUpperCase() === lote.toUpperCase())) {
+        this.form.lotes = this.form.lotes.filter(l => l.toUpperCase() !== lote.toUpperCase())
+      } else {
+        this.form.lotes.push(lote)
+      }
+    },
+    selectAllMatching() {
+      const text = this.loteInput.trim().toUpperCase()
+      const selected = new Set(this.form.lotes.map(l => l.toUpperCase()))
+      for (const l of this.availableLotes) {
+        const lote = String(l.lote)
+        const key = lote.toUpperCase()
+        if ((!text || key.includes(text)) && !selected.has(key) && !this.lotesTaken[key]) {
+          selected.add(key)
+          this.form.lotes.push(lote)
+        }
+      }
+    },
+    // Pegar una lista (de Excel, separada por saltos de línea, comas o tabs) agrega todos
+    onLotePaste(e) {
+      const text = e.clipboardData?.getData('text') || ''
+      if (/[,;\n\r\t]/.test(text.trim())) {
+        e.preventDefault()
+        this.addLote(text)
+      }
+    },
     addLote(value) {
       const selected = new Set(this.form.lotes.map(l => l.toUpperCase()))
-      for (const raw of String(value).split(/[,;\n]/)) {
+      for (const raw of String(value).split(/[,;\n\r\t]+/)) {
         const lote = raw.trim()
         const key = lote.toUpperCase()
         if (!lote || selected.has(key)) continue
@@ -362,6 +430,7 @@ export default {
       try {
         const fd = new FormData()
         fd.append('name', this.form.name.trim())
+        fd.append('rif', this.form.rif.trim())
         fd.append('lotes', JSON.stringify(this.form.lotes))
         fd.append('pos_x', this.form.pos_x)
         fd.append('pos_y', this.form.pos_y)
@@ -449,11 +518,21 @@ export default {
 .lote-add-row { display:flex; gap:8px; }
 .btn-add { font-family:'Poppins',sans-serif; font-size:0.8rem; font-weight:600; padding:0 16px; border:none; border-radius:8px; background:#222; color:#fff; cursor:pointer; white-space:nowrap; }
 .btn-add:disabled { opacity:0.4; cursor:not-allowed; }
-.lote-suggestions { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
-.lote-suggestion { font-family:'Poppins',sans-serif; font-size:0.75rem; font-weight:600; padding:4px 10px; border:1px solid #e5e5e5; border-radius:20px; background:#fafafa; color:#444; cursor:pointer; transition:all 0.2s; }
-.lote-suggestion small { font-weight:400; color:#999; margin-left:4px; }
-.lote-suggestion:hover:not(:disabled) { border-color:#E1052D; color:#E1052D; }
-.lote-suggestion:disabled { opacity:0.5; cursor:not-allowed; }
+.lote-count { margin-left:6px; font-size:0.7rem; font-weight:600; color:#E1052D; text-transform:none; letter-spacing:0; }
+.lote-clear { font-family:'Poppins',sans-serif; font-size:0.72rem; padding:4px 8px; border:none; background:none; color:#999; cursor:pointer; text-decoration:underline; }
+.lote-clear:hover { color:#E1052D; }
+.lote-picker { margin-top:10px; border:2px solid #f0f0f0; border-radius:10px; overflow:hidden; }
+.lote-picker-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 12px; background:#fafafa; border-bottom:1px solid #f0f0f0; font-size:0.75rem; color:#777; }
+.lote-select-all { font-family:'Poppins',sans-serif; font-size:0.75rem; font-weight:600; padding:5px 10px; border:none; border-radius:6px; background:#E1052D; color:#fff; cursor:pointer; white-space:nowrap; }
+.lote-select-all:hover { background:#c5042a; }
+.lote-picker-list { max-height:240px; overflow-y:auto; display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); }
+.lote-option { display:flex; align-items:center; gap:8px; padding:8px 12px; font-size:0.8rem; cursor:pointer; border-bottom:1px solid #f6f6f6; }
+.lote-option:hover { background:#fff7f8; }
+.lote-option.is-checked { background:#fef2f2; }
+.lote-option.is-taken { opacity:0.5; cursor:not-allowed; }
+.lote-option input { accent-color:#E1052D; width:16px; height:16px; flex-shrink:0; }
+.lote-option-code { font-weight:600; color:#333; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.lote-option small { margin-left:auto; color:#999; white-space:nowrap; }
 
 /* Preview */
 .preview-wrapper { display:flex; justify-content:center; background:#e8e8e8; border-radius:14px; padding:28px; border:2px dashed #d0d0d0; }

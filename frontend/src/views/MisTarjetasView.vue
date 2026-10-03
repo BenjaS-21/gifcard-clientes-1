@@ -1,34 +1,36 @@
 <template>
   <div class="mis-tarjetas">
 
-    <!-- Summary Stats -->
-    <div class="summary-row fade-up" style="animation-delay: 80ms">
-      <div class="summary-card">
-        <div class="summary-icon summary-icon--balance">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+    <!-- KPI de actividad -->
+    <div v-if="!loading && giftcards.length" class="kpi-grid fade-up" style="animation-delay: 80ms">
+      <div class="kpi-card kpi-card--wide">
+        <span class="kpi-label">Saldo disponible</span>
+        <span class="kpi-value kpi-value--balance">${{ formatMoney(kpis.saldo) }}</span>
+        <div class="kpi-track">
+          <div class="kpi-fill" :style="{ width: kpis.pctConsumido + '%' }"></div>
         </div>
-        <div class="summary-info">
-          <span class="summary-label">Saldo total disponible</span>
-          <span class="summary-value summary-value--balance">${{ formatMoney(totalBalance) }}</span>
-        </div>
+        <span class="kpi-sub">${{ formatMoney(kpis.consumido) }} consumido de ${{ formatMoney(kpis.emitido) }} ({{ kpis.pctConsumido }}%)</span>
       </div>
-      <div class="summary-card">
-        <div class="summary-icon summary-icon--primary">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-        </div>
-        <div class="summary-info">
-          <span class="summary-label">Tarjetas activas</span>
-          <span class="summary-value">{{ activeCount }}</span>
-        </div>
+      <div class="kpi-card">
+        <span class="kpi-label">Tarjetas</span>
+        <span class="kpi-value">{{ giftcards.length }}</span>
+        <span class="kpi-sub" v-if="kpis.entregadas">{{ kpis.entregadas }} entregadas</span>
+        <span class="kpi-sub" v-else>{{ kpis.conSaldo }} con saldo</span>
       </div>
-      <div class="summary-card">
-        <div class="summary-icon summary-icon--primary">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 10h20"/></svg>
-        </div>
-        <div class="summary-info">
-          <span class="summary-label">Total de tarjetas</span>
-          <span class="summary-value">{{ giftcards.length }}</span>
-        </div>
+      <div class="kpi-card">
+        <span class="kpi-label">Con uso</span>
+        <span class="kpi-value">{{ kpis.conUso }}</span>
+        <span class="kpi-sub">{{ kpis.sinUso }} sin usar</span>
+      </div>
+      <div class="kpi-card">
+        <span class="kpi-label">Agotadas</span>
+        <span class="kpi-value">{{ kpis.agotadas }}</span>
+        <span class="kpi-sub">sin saldo disponible</span>
+      </div>
+      <div class="kpi-card">
+        <span class="kpi-label">Usos registrados</span>
+        <span class="kpi-value">{{ kpis.usos }}</span>
+        <span class="kpi-sub">{{ kpis.ultimoUso ? 'Último: ' + formatDate(kpis.ultimoUso) : 'Sin usos todavía' }}</span>
       </div>
     </div>
 
@@ -42,15 +44,36 @@
     <div v-else class="section">
       <div class="section-header">
         <h2 class="section-title">Mis Gift Cards</h2>
-        <span class="text-xs text-muted">{{ giftcards.length }} {{ giftcards.length === 1 ? 'tarjeta' : 'tarjetas' }}</span>
+        <button
+          v-if="filteredCards.length"
+          class="btn btn-outline btn-sm"
+          :disabled="!!bulkProgress || !!downloading"
+          @click="downloadAll"
+        >
+          <span v-if="bulkProgress" class="spinner spinner-sm"></span>
+          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          {{ bulkProgress ? `Generando ${bulkProgress.done}/${bulkProgress.total}` : `Descargar todas (${filteredCards.length})` }}
+        </button>
       </div>
 
-      <div v-if="giftcards.length" class="grid-cards">
+      <div v-if="giftcards.length" class="card-filters">
+        <button
+          v-for="f in filters"
+          :key="f.value"
+          class="card-filter"
+          :class="{ active: activeFilter === f.value }"
+          @click="activeFilter = f.value"
+        >
+          {{ f.label }} <span class="card-filter-count">{{ f.count }}</span>
+        </button>
+      </div>
+
+      <div v-if="filteredCards.length" class="grid-cards">
         <div
-          v-for="(gc, i) in giftcards"
+          v-for="(gc, i) in filteredCards"
           :key="gc.id"
           class="gc-wrapper fade-up"
-          :style="{ animationDelay: (160 + i * 60) + 'ms' }"
+          :style="{ animationDelay: Math.min(160 + i * 60, 800) + 'ms' }"
           @click="$router.push('/tarjeta/' + gc.id)"
         >
           <!-- Card Visual -->
@@ -97,6 +120,10 @@
             </div>
           </div>
 
+          <div v-if="gc.entregada" class="gc-entregada">
+            Entregada a <strong>{{ gc.cliente_nombre || gc.cliente_cedula || 'otro beneficiario' }}</strong>
+          </div>
+
           <!-- Usage mini-bar -->
           <div class="gc-usage-mini">
             <div class="gc-usage-track">
@@ -106,6 +133,11 @@
           </div>
 
         </div>
+      </div>
+
+      <div v-else-if="giftcards.length" class="empty-state fade-up">
+        <h3>No hay tarjetas en este filtro</h3>
+        <p class="text-secondary" style="margin-top:8px">Elige otro filtro para ver tus tarjetas.</p>
       </div>
 
       <div v-else class="empty-state fade-up">
@@ -131,9 +163,11 @@ import CardCompanyLogo from '../components/ui/CardCompanyLogo.vue'
 
 const router = useRouter()
 const cardEls = {}
-const { downloading, downloadCard } = useCardDownload()
+const { downloading, bulkProgress, downloadCard, downloadAllCards } = useCardDownload()
 const giftcards = ref([])
 const loading = ref(true)
+const cliente = ref(null)
+const activeFilter = ref('all')
 const cardBgUrl = ref(null)
 const cardBgStyle = computed(() => cardBgUrl.value ? { backgroundImage: `url(${cardBgUrl.value})` } : {})
 
@@ -149,9 +183,8 @@ onMounted(async () => {
     return
   }
   try {
-    const cliente = JSON.parse(clienteStr)
-    const res = await api.getGiftCards({ cedula: cliente.cedula })
-    giftcards.value = res.data.results || []
+    cliente.value = JSON.parse(clienteStr)
+    giftcards.value = await api.getAllGiftCards({ cedula: cliente.value.cedula })
   } catch (e) {
     console.error(e)
   } finally {
@@ -159,8 +192,56 @@ onMounted(async () => {
   }
 })
 
-const totalBalance = computed(() => giftcards.value.reduce((s, gc) => s + (gc.saldo || 0), 0))
-const activeCount = computed(() => giftcards.value.filter(gc => (gc.estado || '').toLowerCase() === 'activa').length)
+/* Clasificación de cada tarjeta según su actividad */
+const isAgotada = (gc) => Number(gc.saldo_inicial || 0) > 0 && Number(gc.saldo || 0) <= 0
+const isUsada = (gc) => (gc.num_usos || 0) > 0 || Number(gc.saldo || 0) < Number(gc.saldo_inicial || 0)
+
+const kpis = computed(() => {
+  const cards = giftcards.value
+  const emitido = cards.reduce((s, gc) => s + Number(gc.saldo_inicial || 0), 0)
+  const saldo = cards.reduce((s, gc) => s + Number(gc.saldo || 0), 0)
+  const consumido = Math.max(emitido - saldo, 0)
+  const fechas = cards.map(gc => gc.ultimo_uso).filter(Boolean).sort()
+  return {
+    emitido,
+    saldo,
+    consumido,
+    pctConsumido: emitido ? Math.round((consumido / emitido) * 100) : 0,
+    entregadas: cards.filter(gc => gc.entregada).length,
+    conSaldo: cards.filter(gc => Number(gc.saldo || 0) > 0).length,
+    sinUso: cards.filter(gc => !isUsada(gc)).length,
+    conUso: cards.filter(gc => isUsada(gc) && !isAgotada(gc)).length,
+    agotadas: cards.filter(isAgotada).length,
+    usos: cards.reduce((s, gc) => s + (gc.num_usos || 0), 0),
+    ultimoUso: fechas[fechas.length - 1] || null
+  }
+})
+
+const FILTERS = [
+  { label: 'Todas', value: 'all', test: () => true },
+  { label: 'Sin usar', value: 'sin-uso', test: (gc) => !isUsada(gc) },
+  { label: 'Con uso', value: 'con-uso', test: (gc) => isUsada(gc) && !isAgotada(gc) },
+  { label: 'Agotadas', value: 'agotadas', test: isAgotada },
+  { label: 'Entregadas', value: 'entregadas', test: (gc) => gc.entregada, onlyIfAny: true }
+]
+
+const filters = computed(() => FILTERS
+  .map(f => ({ ...f, count: giftcards.value.filter(f.test).length }))
+  .filter(f => !f.onlyIfAny || f.count > 0))
+
+const filteredCards = computed(() => {
+  const f = FILTERS.find(f => f.value === activeFilter.value) || FILTERS[0]
+  return giftcards.value.filter(f.test)
+})
+
+const downloadAll = () => {
+  const nombre = (cliente.value?.nombre || 'cliente').toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  downloadAllCards(
+    filteredCards.value.map(gc => ({ el: cardEls[gc.id], numero: gc.numero_tarjeta })),
+    `giftcards-damasco-${nombre}.zip`
+  )
+}
 
 const formatMoney = (v) => Number(v || 0).toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const formatDate = (d) => d ? new Date(d).toLocaleDateString('es-VE', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'
@@ -196,68 +277,89 @@ const usageColorClass = (gc) => {
   opacity: 0.95;
 }
 
-/* ── Summary Row ── */
-.summary-row {
+/* ── KPI ── */
+.kpi-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: var(--space-4);
   margin-bottom: var(--space-10);
 }
-.summary-card {
+.kpi-card {
   display: flex;
-  align-items: center;
-  gap: var(--space-4);
+  flex-direction: column;
+  gap: 4px;
   padding: var(--space-5) var(--space-6);
   background: var(--color-bg-card);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-subtle);
-  transition: all var(--transition-base);
-}
-.summary-card:hover {
-  transform: translateY(-3px);
-  box-shadow: var(--shadow-hover);
-  border-color: rgba(0,0,0,0.12);
-}
-.summary-icon {
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-sm);
-  background: var(--color-surface-hover);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-muted);
-  flex-shrink: 0;
-}
-.summary-icon--balance {
-  background: rgba(34, 197, 94, 0.1);
-  color: var(--color-success);
-}
-.summary-icon--primary {
-  background: rgba(200, 16, 46, 0.1);
-  color: var(--color-primary);
-}
-.summary-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
   min-width: 0;
 }
-.summary-label {
+.kpi-card--wide { grid-column: span 2; }
+.kpi-label {
   font-size: 0.8125rem;
   color: var(--color-muted);
-  font-weight: 400;
 }
-.summary-value {
+.kpi-value {
   font-size: 1.5rem;
   font-weight: 700;
   letter-spacing: -0.02em;
   line-height: 1.2;
 }
-.summary-value--balance {
-  color: var(--color-success);
+.kpi-value--balance { color: var(--color-success); font-size: 1.875rem; }
+.kpi-sub {
+  font-size: 0.75rem;
+  color: var(--color-muted);
 }
+.kpi-track {
+  height: 6px;
+  margin: 6px 0 2px;
+  background: var(--color-surface-hover);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.kpi-fill {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: 3px;
+  transition: width 1s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ── Filtros ── */
+.card-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+}
+.card-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-card);
+  color: var(--color-foreground);
+  transition: all var(--transition-base);
+}
+.card-filter:hover { border-color: var(--color-muted); }
+.card-filter.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+.card-filter-count { font-size: 0.75rem; opacity: 0.7; }
+
+.gc-entregada {
+  font-size: 0.75rem;
+  color: var(--color-muted);
+  padding: var(--space-2) var(--space-2) 0;
+  text-align: center;
+}
+.gc-entregada strong { color: var(--color-foreground); font-weight: 600; }
 
 /* ── Gift Card Wrapper ── */
 .gc-wrapper {
@@ -426,13 +528,14 @@ const usageColorClass = (gc) => {
   .grid-cards { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 768px) {
-  .summary-row { grid-template-columns: 1fr; gap: var(--space-3); margin-bottom: var(--space-8); }
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); gap: var(--space-3); margin-bottom: var(--space-8); }
   .grid-cards { grid-template-columns: 1fr; max-width: 480px; margin: 0 auto; }
   .gc-wrapper .gift-card { max-width: 100%; }
 }
 @media (max-width: 480px) {
-  .summary-card { padding: var(--space-4); }
-  .summary-value { font-size: 1.25rem; }
+  .kpi-card { padding: var(--space-4); }
+  .kpi-value { font-size: 1.25rem; }
+  .kpi-value--balance { font-size: 1.5rem; }
   .gc-meta { flex-direction: column; align-items: flex-start; gap: var(--space-2); }
 }
 

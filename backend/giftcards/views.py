@@ -5,9 +5,14 @@ Endpoints conectados a SAP (SQL Server) vía pyodbc.
 Si USE_MOCK_DATA=true en .env, usa datos de ejemplo.
 """
 
+import hmac
+import logging
+import re
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.throttling import ScopedRateThrottle
 from django.conf import settings
 
 from .queries import (
@@ -23,13 +28,31 @@ from .queries import (
     get_recent_transactions,
     get_top_clients,
     get_lotes,
+    get_transactions_by_codes,
     activate_giftcard,
 )
-from .models import CompanyLogo, CompanyLote
+from .auth import (
+    VENDEDORES_GROUP,
+    get_admin_token,
+    get_client_cedula,
+    is_vendedor_user,
+    make_caja_token,
+    make_client_token,
+    make_vendedor_token,
+    require_admin_token,
+    require_caja,
+    require_vendedor,
+)
+from .models import AdminToken, CardTemplate, CompanyLogo, CompanyLote
 from .utils import execute_query, execute_query_single, execute_query_paginated, execute_update
 
 
 DEBIT_TYPES = {'USO', 'REDENCION', 'USO-PENDIENTE', 'CONSUMO'}
+
+# Códigos por consulta de movimientos (2 parámetros por código; SQL Server acepta 2100)
+TX_BATCH_SIZE = 500
+
+logger = logging.getLogger(__name__)
 
 
 def adjust_saldo_with_pending(giftcard, transactions):
@@ -53,9 +76,96 @@ def adjust_saldo_with_pending(giftcard, transactions):
     return {**giftcard, 'saldo': saldo_real}
 
 
+def code_key(code):
+    """Clave para agrupar por código de tarjeta (SQL Server compara sin mayúsculas ni espacios finales)."""
+    return str(code or '').strip().upper()
+
+
+def fetch_transactions_by_code(codes):
+    """
+    Movimientos SAP + KLK de varias tarjetas en una consulta por cada 500 códigos,
+    en lugar de una consulta por tarjeta. Devuelve {code_key(codigo): [tx, ...]}.
+
+    Si la consulta por lotes falla, usa la consulta anterior tarjeta por tarjeta
+    para que el portal siga funcionando.
+    """
+    codes = list(dict.fromkeys(c for c in codes if c))
+    result = {code_key(c): [] for c in codes}
+    if not codes:
+        return result
+    try:
+        for i in range(0, len(codes), TX_BATCH_SIZE):
+            query, params = get_transactions_by_codes(codes[i:i + TX_BATCH_SIZE])
+            for tx in execute_query(query, params):
+                result.setdefault(code_key(tx.get('numero_tarjeta')), []).append(tx)
+    except Exception as e:
+        logger.warning(f"Consulta de movimientos por lotes falló, se usa una por tarjeta: {e}")
+        result = {}
+        for code in codes:
+            try:
+                query, params = get_giftcard_transactions_by_code(code)
+                result[code_key(code)] = execute_query(query, params)
+            except Exception:
+                result[code_key(code)] = []
+    return result
+
+
 def normalize_lote(lote):
     """Normaliza un código de lote para compararlo (sin espacios, mayúsculas)."""
     return str(lote if lote is not None else '').strip().upper()
+
+
+def normalize_id(value):
+    """Normaliza una cédula o RIF para compararlos (sin guiones ni espacios, mayúsculas)."""
+    return re.sub(r'[^0-9A-Z]', '', str(value or '').upper())
+
+
+def find_company_by_rif(identificador):
+    """Empresa compradora cuyo RIF coincide con el identificador, o None."""
+    key = normalize_id(identificador)
+    if not key:
+        return None
+    for company in CompanyLogo.objects.exclude(rif='').prefetch_related('lotes'):
+        if normalize_id(company.rif) == key:
+            return company
+    return None
+
+
+def add_card_activity(gc, transactions, owner_cedula):
+    """
+    Agrega datos de actividad a la gift card para los KPI del cliente:
+    cantidad de usos, fecha del último uso y si ya fue entregada
+    (está a nombre de alguien distinto a quien consulta).
+    """
+    debitos = [tx for tx in transactions if (tx.get('tipo', '') or '').upper() in DEBIT_TYPES]
+    gc['num_usos'] = len(debitos)
+    gc['ultimo_uso'] = max((str(tx['fecha']) for tx in debitos if tx.get('fecha')), default=None)
+    gc['entregada'] = normalize_id(gc.get('cliente_cedula')) != normalize_id(owner_cedula)
+    return gc
+
+
+def card_belongs_to(giftcard, cedula):
+    """
+    True si la tarjeta es del cliente: está a su nombre o, si la cédula es el
+    RIF de una empresa compradora, pertenece a uno de sus lotes.
+    """
+    if normalize_id(giftcard.get('cliente_cedula')) == normalize_id(cedula):
+        return True
+    company = find_company_by_rif(cedula)
+    if not company:
+        return False
+    return normalize_lote(giftcard.get('lote')) in {normalize_lote(cl.lote) for cl in company.lotes.all()}
+
+
+def client_auth_required():
+    return Response(
+        {'error': 'Tu sesión venció. Inicia sesión de nuevo.', 'code': 'client_auth'},
+        status=status.HTTP_401_UNAUTHORIZED
+    )
+
+
+def card_not_found():
+    return Response({'error': 'Gift Card no encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
 
 def attach_company_logos(request, giftcards):
@@ -102,8 +212,9 @@ USE_MOCK = settings.USE_MOCK_DATA
 
 
 class DashboardStatsView(APIView):
-    """GET /api/dashboard/stats/ — Estadísticas generales"""
+    """GET /api/dashboard/stats/ — Estadísticas generales (admin)"""
 
+    @require_admin_token
     def get(self, request):
         if USE_MOCK:
             active = sum(1 for gc in MOCK_GIFTCARDS if gc['estado'] == 'activa')
@@ -150,8 +261,9 @@ class DashboardStatsView(APIView):
 
 
 class ClientListView(APIView):
-    """GET /api/clients/ — Lista de clientes"""
+    """GET /api/clients/ — Lista de clientes (admin)"""
 
+    @require_admin_token
     def get(self, request):
         search = request.query_params.get('search', None)
         page = int(request.query_params.get('page', 1))
@@ -182,8 +294,9 @@ class ClientListView(APIView):
 
 
 class ClientDetailView(APIView):
-    """GET /api/clients/<cedula>/ — Detalle de un cliente por cédula"""
+    """GET /api/clients/<cedula>/ — Detalle de un cliente por cédula (admin)"""
 
+    @require_admin_token
     def get(self, request, client_id):
         if USE_MOCK:
             client = next((c for c in MOCK_CLIENTS if c['id'] == client_id or c['cedula'] == str(client_id)), None)
@@ -205,13 +318,10 @@ class ClientDetailView(APIView):
             query_gc, params_gc = get_client_giftcards(cedula)
             giftcards = execute_query(query_gc, params_gc)
 
-            # Para cada gift card, cargar transacciones SAP+KLK y ajustar saldo
+            # Cargar transacciones SAP+KLK de todas las tarjetas y ajustar saldo
+            txns_by_code = fetch_transactions_by_code([gc['numero_tarjeta'] for gc in giftcards])
             for gc in giftcards:
-                try:
-                    q_tx, p_tx = get_giftcard_transactions_by_code(gc['numero_tarjeta'])
-                    txns = execute_query(q_tx, p_tx)
-                except Exception:
-                    txns = []
+                txns = txns_by_code.get(code_key(gc['numero_tarjeta']), [])
                 adjusted = adjust_saldo_with_pending(gc, txns)
                 gc['saldo'] = adjusted['saldo']
                 gc['transactions'] = txns
@@ -229,19 +339,33 @@ class ClientDetailView(APIView):
 
 
 class GiftCardListView(APIView):
-    """GET /api/giftcards/ — Lista de gift cards"""
+    """
+    GET /api/giftcards/ — Lista de gift cards.
+    El cliente solo recibe las suyas (la cédula sale de su token);
+    el admin puede listar todas o filtrar por cédula.
+    """
 
     def get(self, request):
         search = request.query_params.get('search', None)
         card_status = request.query_params.get('status', None)
         cedula = request.query_params.get('cedula', None)
+        if not get_admin_token(request):
+            cedula = get_client_cedula(request)
+            if not cedula:
+                return client_auth_required()
         page = int(request.query_params.get('page', 1))
         page_size = int(request.query_params.get('page_size', 20))
 
         if USE_MOCK:
             results = MOCK_GIFTCARDS
             if cedula:
-                results = [gc for gc in results if gc.get('cliente_cedula', '').lower() == cedula.lower()]
+                company = find_company_by_rif(cedula)
+                company_lotes = {normalize_lote(cl.lote) for cl in company.lotes.all()} if company else set()
+                results = [
+                    gc for gc in results
+                    if gc.get('cliente_cedula', '').lower() == cedula.lower()
+                    or normalize_lote(gc.get('lote')) in company_lotes
+                ]
             if search:
                 sl = search.lower()
                 results = [gc for gc in results if sl in gc['numero_tarjeta'].lower() or sl in gc['cliente_nombre'].lower()]
@@ -250,6 +374,9 @@ class GiftCardListView(APIView):
             total = len(results)
             start = (page - 1) * page_size
             page_results = [dict(gc) for gc in results[start:start + page_size]]
+            if cedula:
+                for gc in page_results:
+                    add_card_activity(gc, [t for t in MOCK_TRANSACTIONS if t['giftcard_id'] == gc['id']], cedula)
             attach_company_logos(request, page_results)
             return Response({
                 'results': page_results,
@@ -258,19 +385,21 @@ class GiftCardListView(APIView):
             })
 
         try:
-            # Si viene cédula, buscar gift cards del cliente
+            # Si viene cédula, buscar gift cards del cliente.
+            # Si es el RIF de una empresa compradora, incluye todas las
+            # tarjetas de sus lotes (también las ya entregadas a empleados).
             if cedula:
-                query, params = get_client_giftcards(cedula)
+                company = find_company_by_rif(cedula)
+                company_lotes = [cl.lote for cl in company.lotes.all()] if company else None
+                query, params = get_client_giftcards(cedula, company_lotes)
                 data = execute_query_paginated(query, params, page, page_size)
                 # Ajustar saldo de cada GC con transacciones pendientes de KLK
+                txns_by_code = fetch_transactions_by_code([gc['numero_tarjeta'] for gc in data.get('results', [])])
                 for gc in data.get('results', []):
-                    try:
-                        q_tx, p_tx = get_giftcard_transactions_by_code(gc['numero_tarjeta'])
-                        txns = execute_query(q_tx, p_tx)
-                    except Exception:
-                        txns = []
+                    txns = txns_by_code.get(code_key(gc['numero_tarjeta']), [])
                     adjusted = adjust_saldo_with_pending(gc, txns)
                     gc['saldo'] = adjusted['saldo']
+                    add_card_activity(gc, txns, cedula)
                 attach_company_logos(request, data.get('results', []))
                 return Response(data)
 
@@ -285,14 +414,60 @@ class GiftCardListView(APIView):
             )
 
 
+class ClientMovimientosView(APIView):
+    """
+    GET /api/giftcards/movimientos/ — Todos los movimientos de las tarjetas del
+    cliente autenticado (o de los lotes de su empresa), en una sola petición.
+    """
+
+    def get(self, request):
+        cedula = get_client_cedula(request)
+        if not cedula:
+            return client_auth_required()
+
+        if USE_MOCK:
+            cards = [gc for gc in MOCK_GIFTCARDS if card_belongs_to(gc, cedula)]
+            by_id = {gc['id']: gc for gc in cards}
+            movimientos = [
+                {**tx, 'numero_tarjeta': by_id[tx['giftcard_id']]['numero_tarjeta']}
+                for tx in MOCK_TRANSACTIONS if tx['giftcard_id'] in by_id
+            ]
+            return Response({'results': movimientos})
+
+        try:
+            company = find_company_by_rif(cedula)
+            company_lotes = [cl.lote for cl in company.lotes.all()] if company else None
+            query, params = get_client_giftcards(cedula, company_lotes)
+            cards = execute_query(query, params)
+            txns_by_code = fetch_transactions_by_code([gc['numero_tarjeta'] for gc in cards])
+            movimientos = [
+                {**tx, 'numero_tarjeta': gc['numero_tarjeta']}
+                for gc in cards
+                for tx in txns_by_code.get(code_key(gc['numero_tarjeta']), [])
+            ]
+            movimientos.sort(key=lambda tx: str(tx.get('fecha') or ''), reverse=True)
+            return Response({'results': movimientos})
+        except Exception as e:
+            logger.error(f"Error obteniendo movimientos del cliente: {e}")
+            return Response(
+                {'error': 'Error obteniendo movimientos'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
 class GiftCardDetailView(APIView):
-    """GET /api/giftcards/<id>/ — Detalle de una gift card"""
+    """GET /api/giftcards/<id>/ — Detalle de una gift card (del cliente o admin)"""
 
     def get(self, request, giftcard_id):
+        is_admin = bool(get_admin_token(request))
+        cedula = get_client_cedula(request)
+        if not is_admin and not cedula:
+            return client_auth_required()
+
         if USE_MOCK:
             gc = next((g for g in MOCK_GIFTCARDS if g['id'] == giftcard_id), None)
-            if not gc:
-                return Response({'error': 'Gift Card no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+            if not gc or (not is_admin and not card_belongs_to(gc, cedula)):
+                return card_not_found()
             txns = [t for t in MOCK_TRANSACTIONS if t['giftcard_id'] == giftcard_id]
             gc = attach_company_logos(request, [dict(gc)])[0]
             return Response({**gc, 'transactions': txns})
@@ -301,8 +476,8 @@ class GiftCardDetailView(APIView):
             query, params = get_giftcard_detail(giftcard_id)
             giftcard = execute_query_single(query, params)
 
-            if not giftcard:
-                return Response({'error': 'Gift Card no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+            if not giftcard or (not is_admin and not card_belongs_to(giftcard, cedula)):
+                return card_not_found()
 
             # Obtener transacciones SAP + KLK usando el código de tarjeta
             try:
@@ -326,10 +501,18 @@ class GiftCardDetailView(APIView):
 
 
 class GiftCardTransactionsView(APIView):
-    """GET /api/giftcards/<id>/transactions/ — Movimientos de una gift card"""
+    """GET /api/giftcards/<id>/transactions/ — Movimientos de una gift card (del cliente o admin)"""
 
     def get(self, request, giftcard_id):
+        is_admin = bool(get_admin_token(request))
+        cedula = get_client_cedula(request)
+        if not is_admin and not cedula:
+            return client_auth_required()
+
         if USE_MOCK:
+            gc = next((g for g in MOCK_GIFTCARDS if g['id'] == giftcard_id), None)
+            if not gc or (not is_admin and not card_belongs_to(gc, cedula)):
+                return card_not_found()
             txns = [t for t in MOCK_TRANSACTIONS if t['giftcard_id'] == giftcard_id]
             return Response({'results': txns})
 
@@ -337,8 +520,8 @@ class GiftCardTransactionsView(APIView):
             # Obtener el código de la tarjeta para incluir transacciones KLK
             query_gc, params_gc = get_giftcard_detail(giftcard_id)
             giftcard = execute_query_single(query_gc, params_gc)
-            if not giftcard:
-                return Response({'results': [], 'error': 'Gift Card no encontrada'})
+            if not giftcard or (not is_admin and not card_belongs_to(giftcard, cedula)):
+                return card_not_found()
             query, params = get_giftcard_transactions_by_code(giftcard['numero_tarjeta'])
             transactions = execute_query(query, params)
             return Response({'results': transactions})
@@ -350,8 +533,9 @@ class GiftCardTransactionsView(APIView):
 
 
 class GiftCardLookupView(APIView):
-    """GET /api/giftcards/lookup/?numero=XXX — Buscar gift card por número"""
+    """GET /api/giftcards/lookup/?numero=XXX — Buscar gift card por número (caja)"""
 
+    @require_caja
     def get(self, request):
         numero = request.query_params.get('numero', '').strip()
 
@@ -403,8 +587,9 @@ class GiftCardLookupView(APIView):
 
 
 class ActivateGiftCardView(APIView):
-    """POST /api/giftcards/activate/ — Activar gift card (nombre + cédula)"""
+    """POST /api/giftcards/activate/ — Activar gift card (nombre + cédula) (caja)"""
 
+    @require_caja
     def post(self, request):
         codigo = (request.data.get('codigo') or '').strip()
         nombre = (request.data.get('nombre') or '').strip()
@@ -472,8 +657,15 @@ class ActivateGiftCardView(APIView):
             )
 
 
+def client_login_response(client):
+    """Respuesta de login de cliente con su token de sesión."""
+    return Response({'tipo': 'cliente', 'cliente': client, 'token': make_client_token(client['cedula'])})
+
+
 class AuthLoginView(APIView):
     """POST /api/auth/login/ — Login por cédula o número de tarjeta"""
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         identificador = (request.data.get('identificador') or '').strip()
@@ -499,8 +691,11 @@ class AuthLoginView(APIView):
                 None
             )
             if not client:
+                company = find_company_by_rif(identificador)
+                if company:
+                    return client_login_response({'cedula': identificador, 'nombre': company.name})
                 return Response({'error': 'Cédula no registrada'}, status=status.HTTP_404_NOT_FOUND)
-            return Response({'tipo': 'cliente', 'cliente': client})
+            return client_login_response(client)
 
         try:
             # Detectar si es un número de tarjeta o cédula
@@ -519,7 +714,12 @@ class AuthLoginView(APIView):
             client = execute_query_single(query_cl, params_cl)
 
             if client:
-                return Response({'tipo': 'cliente', 'cliente': client})
+                return client_login_response(client)
+
+            # Empresa compradora que ya entregó todas sus tarjetas
+            company = find_company_by_rif(identificador)
+            if company:
+                return client_login_response({'cedula': identificador, 'nombre': company.name})
 
             return Response(
                 {'error': 'No se encontró tarjeta ni cliente con ese identificador'},
@@ -530,6 +730,23 @@ class AuthLoginView(APIView):
                 {'error': f'Error al verificar: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class CajaLoginView(APIView):
+    """POST /api/caja/login/ — Valida el PIN de caja y devuelve un token de sesión."""
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
+    def post(self, request):
+        pin = str(request.data.get('pin') or '')
+        if not settings.CAJA_PIN:
+            return Response(
+                {'error': 'El PIN de caja no está configurado en el servidor (CAJA_PIN).'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+        if not pin or not hmac.compare_digest(pin.encode(), settings.CAJA_PIN.encode()):
+            return Response({'error': 'PIN incorrecto'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'token': make_caja_token()})
 
 
 class AuthLogoutView(APIView):
@@ -550,35 +767,12 @@ class AuthCheckView(APIView):
 # ADMIN — Panel de Templates de Gift Card
 # ============================================================
 from django.contrib.auth import authenticate
-from .models import CardTemplate, AdminToken
-from functools import wraps
-
-
-def require_admin_token(view_func):
-    """Decorator que valida el token admin en Authorization header o query param."""
-    @wraps(view_func)
-    def wrapper(self, request, *args, **kwargs):
-        # Buscar token en header: Authorization: Token <uuid>
-        auth_header = request.headers.get('Authorization', '')
-        token_str = None
-        if auth_header.startswith('Token '):
-            token_str = auth_header.split(' ', 1)[1]
-        # Fallback: query param ?token=<uuid>
-        if not token_str:
-            token_str = request.query_params.get('token')
-        if not token_str:
-            return Response({'error': 'Token requerido'}, status=status.HTTP_401_UNAUTHORIZED)
-        try:
-            admin_token = AdminToken.objects.get(token=token_str, is_active=True)
-        except AdminToken.DoesNotExist:
-            return Response({'error': 'Token inválido o expirado'}, status=status.HTTP_401_UNAUTHORIZED)
-        request.admin_token = admin_token
-        return view_func(self, request, *args, **kwargs)
-    return wrapper
 
 
 class AdminLoginView(APIView):
     """POST /api/admin/login/ — Login con credenciales Django, devuelve token."""
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         username = request.data.get('username', '').strip()
@@ -766,7 +960,6 @@ class SaveDesignView(APIView):
 # ============================================================
 import json
 import logging
-import re
 from django.db import transaction
 
 LOGO_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml']
@@ -777,6 +970,7 @@ def _company_to_dict(request, company):
     return {
         'id': company.id,
         'name': company.name,
+        'rif': company.rif,
         'logo_url': request.build_absolute_uri(company.logo.url) if company.logo else None,
         'pos_x': company.pos_x,
         'pos_y': company.pos_y,
@@ -871,6 +1065,7 @@ class CompanyLogoListView(APIView):
         with transaction.atomic():
             company = CompanyLogo.objects.create(
                 name=name,
+                rif=(request.data.get('rif') or '').strip(),
                 logo=logo,
                 pos_x=_parse_percent(request.data.get('pos_x'), 50, 0, 100),
                 pos_y=_parse_percent(request.data.get('pos_y'), 50, 0, 100),
@@ -909,6 +1104,8 @@ class CompanyLogoDetailView(APIView):
         with transaction.atomic():
             if 'name' in request.data:
                 company.name = request.data.get('name').strip()
+            if 'rif' in request.data:
+                company.rif = (request.data.get('rif') or '').strip()
             if logo:
                 company.logo = logo
             company.pos_x = _parse_percent(request.data.get('pos_x'), company.pos_x, 0, 100)
@@ -943,23 +1140,193 @@ class CompanyLogoDetailView(APIView):
         return Response({'message': 'Empresa eliminada'})
 
 
+def lotes_response():
+    """Lotes existentes en SAP con su cantidad de tarjetas."""
+    if USE_MOCK:
+        counts = {}
+        for gc in MOCK_GIFTCARDS:
+            if gc.get('lote'):
+                counts[gc['lote']] = counts.get(gc['lote'], 0) + 1
+        return Response([{'lote': lote, 'total_giftcards': n} for lote, n in sorted(counts.items())])
+
+    try:
+        query, params = get_lotes()
+        return Response(execute_query(query, params))
+    except Exception as e:
+        return Response(
+            {'error': f'Error obteniendo lotes: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
 class LoteListView(APIView):
     """GET /api/admin/lotes/ — Lotes existentes en SAP, para asociarlos a una empresa."""
 
     @require_admin_token
     def get(self, request):
+        return lotes_response()
+
+
+# ============================================================
+# VENDEDORES — ven todas las gift cards generadas y las descargan
+# ============================================================
+from django.contrib.auth.models import Group, User, update_last_login
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
+
+VENDEDOR_MAX_PAGE_SIZE = 100
+
+
+class VendedorLoginView(APIView):
+    """POST /api/vendedor/login/ — Login de vendedor con usuario y contraseña."""
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
+    def post(self, request):
+        username = (request.data.get('username') or '').strip()
+        password = request.data.get('password') or ''
+        user = authenticate(username=username, password=password) if username and password else None
+        if not is_vendedor_user(user):
+            return Response({'error': 'Usuario o contraseña incorrectos'}, status=status.HTTP_401_UNAUTHORIZED)
+        update_last_login(None, user)
+        return Response({
+            'token': make_vendedor_token(user),
+            'nombre': user.get_full_name() or user.username,
+        })
+
+
+class VendedorGiftCardListView(APIView):
+    """
+    GET /api/vendedor/giftcards/?search=&status=&lote=&page=&page_size=
+    Todas las gift cards generadas, para descargarlas y enviarlas a los clientes.
+    """
+
+    @require_vendedor
+    def get(self, request):
+        search = (request.query_params.get('search') or '').strip() or None
+        card_status = (request.query_params.get('status') or '').strip() or None
+        lote = (request.query_params.get('lote') or '').strip() or None
+        try:
+            page = max(int(request.query_params.get('page', 1)), 1)
+            page_size = min(max(int(request.query_params.get('page_size', 24)), 1), VENDEDOR_MAX_PAGE_SIZE)
+        except ValueError:
+            return Response({'error': 'Paginación inválida'}, status=status.HTTP_400_BAD_REQUEST)
+
         if USE_MOCK:
-            counts = {}
-            for gc in MOCK_GIFTCARDS:
-                if gc.get('lote'):
-                    counts[gc['lote']] = counts.get(gc['lote'], 0) + 1
-            return Response([{'lote': lote, 'total_giftcards': n} for lote, n in sorted(counts.items())])
+            results = MOCK_GIFTCARDS
+            if search:
+                sl = search.lower()
+                results = [gc for gc in results if any(
+                    sl in str(gc.get(k) or '').lower()
+                    for k in ('numero_tarjeta', 'cliente_nombre', 'cliente_cedula', 'lote')
+                )]
+            if card_status:
+                results = [gc for gc in results if (gc['estado'] or '').upper() == card_status.upper()]
+            if lote:
+                results = [gc for gc in results if normalize_lote(gc.get('lote')) == normalize_lote(lote)]
+            total = len(results)
+            start = (page - 1) * page_size
+            page_results = [dict(gc) for gc in results[start:start + page_size]]
+            attach_company_logos(request, page_results)
+            return Response({
+                'results': page_results,
+                'page': page, 'page_size': page_size,
+                'total': total, 'total_pages': (total + page_size - 1) // page_size,
+            })
 
         try:
-            query, params = get_lotes()
-            return Response(execute_query(query, params))
+            query, params = get_all_giftcards(search, card_status, lote)
+            data = execute_query_paginated(query, params, page, page_size)
+            attach_company_logos(request, data.get('results', []))
+            return Response(data)
         except Exception as e:
             return Response(
-                {'error': f'Error obteniendo lotes: {str(e)}'},
+                {'error': f'Error obteniendo gift cards: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class VendedorLoteListView(APIView):
+    """GET /api/vendedor/lotes/ — Lotes para el filtro del vendedor."""
+
+    @require_vendedor
+    def get(self, request):
+        return lotes_response()
+
+
+def _vendedor_to_dict(user):
+    return {
+        'id': user.id,
+        'username': user.username,
+        'nombre': user.get_full_name(),
+        'is_active': user.is_active,
+        'last_login': user.last_login.isoformat() if user.last_login else None,
+        'date_joined': user.date_joined.isoformat(),
+    }
+
+
+def _password_error(password, user=None):
+    """Mensaje de error si la contraseña no cumple las reglas de Django, o None."""
+    try:
+        validate_password(password, user)
+    except ValidationError as e:
+        return ' '.join(e.messages)
+    return None
+
+
+class VendedorAdminListView(APIView):
+    """
+    GET  /api/admin/vendedores/ — Lista de vendedores
+    POST /api/admin/vendedores/ — Crear vendedor (username, nombre, password)
+    """
+
+    @require_admin_token
+    def get(self, request):
+        users = User.objects.filter(groups__name=VENDEDORES_GROUP).order_by('first_name', 'username')
+        return Response([_vendedor_to_dict(u) for u in users])
+
+    @require_admin_token
+    def post(self, request):
+        username = (request.data.get('username') or '').strip()
+        nombre = (request.data.get('nombre') or '').strip()
+        password = request.data.get('password') or ''
+
+        if not username or not nombre or not password:
+            return Response({'error': 'Usuario, nombre y contraseña son requeridos'}, status=status.HTTP_400_BAD_REQUEST)
+        if User.objects.filter(username__iexact=username).exists():
+            return Response({'error': f'El usuario "{username}" ya existe'}, status=status.HTTP_400_BAD_REQUEST)
+        candidate = User(username=username, first_name=nombre)
+        error = _password_error(password, candidate)
+        if error:
+            return Response({'error': error}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            user = User.objects.create_user(username=username, password=password, first_name=nombre)
+            group, _ = Group.objects.get_or_create(name=VENDEDORES_GROUP)
+            user.groups.add(group)
+        return Response(_vendedor_to_dict(user), status=status.HTTP_201_CREATED)
+
+
+class VendedorAdminDetailView(APIView):
+    """PATCH /api/admin/vendedores/<id>/ — Cambiar nombre, contraseña o activar/desactivar."""
+
+    @require_admin_token
+    def patch(self, request, user_id):
+        user = User.objects.filter(pk=user_id, groups__name=VENDEDORES_GROUP).first()
+        if not user:
+            return Response({'error': 'Vendedor no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+        if 'nombre' in request.data:
+            nombre = (request.data.get('nombre') or '').strip()
+            if not nombre:
+                return Response({'error': 'El nombre es requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            user.first_name = nombre
+        if request.data.get('password'):
+            error = _password_error(request.data['password'], user)
+            if error:
+                return Response({'error': error}, status=status.HTTP_400_BAD_REQUEST)
+            user.set_password(request.data['password'])
+        if 'is_active' in request.data:
+            user.is_active = str(request.data.get('is_active')).lower() in ('true', '1')
+        user.save()
+        return Response(_vendedor_to_dict(user))

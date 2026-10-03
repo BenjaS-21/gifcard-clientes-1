@@ -23,7 +23,7 @@ NOTA: Todos los queries usan '?' como placeholder (pyodbc/ODBC estándar).
 # QUERIES DE GIFT CARDS (@DM_GC_FICHA)
 # ============================================================
 
-def get_all_giftcards(search=None, status=None):
+def get_all_giftcards(search=None, status=None, lote=None):
     """Obtener todas las gift cards con filtros opcionales."""
     query = """
         SELECT
@@ -64,6 +64,10 @@ def get_all_giftcards(search=None, status=None):
     if status:
         query += ' AND T0."U_Estado" = ?'
         params.append(status)
+
+    if lote:
+        query += ' AND T0."U_Lote" = ?'
+        params.append(lote)
 
     query += ' ORDER BY T0."DocEntry" DESC'
 
@@ -249,6 +253,71 @@ def get_giftcard_transactions_by_code(gift_code):
     )
 
 
+def get_transactions_by_codes(gift_codes):
+    """
+    Movimientos de VARIAS gift cards en una sola consulta.
+
+    Misma lógica que get_giftcard_transactions_by_code (entradas desde SAP,
+    consumos desde KLK), con la columna numero_tarjeta para agruparlos.
+    Usa 2 parámetros por código: llamar con lotes de hasta 500 códigos
+    (SQL Server acepta máximo 2100 parámetros por consulta).
+
+    Las columnas de KLK y SAP se comparan con COLLATE DATABASE_DEFAULT
+    porque las dos bases pueden tener collations distintas.
+    """
+    placeholders = ', '.join('?' for _ in gift_codes)
+    return (
+        f"""
+        SELECT
+            T1."LineId"              AS id,
+            T1."U_FechaHora"         AS fecha,
+            T1."U_Tipo"              AS tipo,
+            T1."U_Monto"             AS monto,
+            T1."U_Referencia"        AS descripcion,
+            T1."U_NumFactura"        AS referencia,
+            T1."U_ClienteCardCode"   AS cliente,
+            T1."U_SaldoAnterior"     AS saldo_anterior,
+            T1."U_SaldoNuevo"        AS saldo_posterior,
+            T1."U_Usuario"           AS usuario,
+            CAST(T1."U_Sucursal" AS NVARCHAR(100)) AS sucursal,
+            'SAP'                    AS origen,
+            T0."U_Codigo"            AS numero_tarjeta
+        FROM "@DM_GC_FICHA" T0
+        INNER JOIN "@DM_GC_TRX" T1 ON T1."DocEntry" = T0."DocEntry"
+        WHERE T0."U_Codigo" IN ({placeholders})
+          AND T1."U_Tipo" NOT IN ('USO', 'REDENCION', 'CONSUMO')
+
+        UNION ALL
+
+        SELECT
+            0                                 AS id,
+            C1.Fecha                          AS fecha,
+            'USO-PENDIENTE'                   AS tipo,
+            C2.MontoUsd                       AS monto,
+            'Pago en tienda (pendiente SAP)'  AS descripcion,
+            C1.NFactura COLLATE SQL_Latin1_General_CP1_CI_AS  AS referencia,
+            ''                                AS cliente,
+            GC."U_Saldo"                      AS saldo_anterior,
+            CASE WHEN GC."U_Saldo" - C2.MontoUsd < 0 THEN 0
+                 ELSE GC."U_Saldo" - C2.MontoUsd END AS saldo_posterior,
+            C1.NomCaja COLLATE SQL_Latin1_General_CP1_CI_AS   AS usuario,
+            CAST(C1.Sucursal AS NVARCHAR(100)) AS sucursal,
+            'KLK'                             AS origen,
+            GC."U_Codigo"                     AS numero_tarjeta
+        FROM [KLK_CONSOLIDADO_V2].[dbo].[KLK_COBROHDR] C1
+        INNER JOIN [KLK_CONSOLIDADO_V2].[dbo].[KLK_COBROLINE] C2
+            ON C2.NroCobro = C1.NroCobro AND C2.Sucursal = C1.Sucursal
+        INNER JOIN "@DM_GC_FICHA" GC
+            ON GC."U_Codigo" COLLATE DATABASE_DEFAULT = C2.NTransaccion COLLATE DATABASE_DEFAULT
+        WHERE C2.CuentaSAP COLLATE SQL_Latin1_General_CP1_CI_AS = '2.1.02.01.03.96'
+          AND C2.NTransaccion COLLATE DATABASE_DEFAULT IN ({placeholders})
+
+        ORDER BY numero_tarjeta, id ASC
+        """,
+        list(gift_codes) + list(gift_codes)
+    )
+
+
 def get_recent_transactions(limit=10):
     """Transacciones más recientes (global)."""
     return (
@@ -323,10 +392,13 @@ def get_client_detail(cedula):
     )
 
 
-def get_client_giftcards(cedula):
-    """Gift cards de un cliente por cédula."""
-    return (
-        """
+def get_client_giftcards(cedula, lotes=None):
+    """
+    Gift cards de un cliente por cédula.
+    Si se pasan lotes (empresa compradora), incluye también todas las tarjetas
+    de esos lotes aunque ya estén a nombre de otro beneficiario.
+    """
+    query = """
         SELECT
             T0."DocEntry"            AS id,
             T0."U_Codigo"            AS numero_tarjeta,
@@ -337,15 +409,25 @@ def get_client_giftcards(cedula):
             T0."U_FechaGeneracion"   AS fecha_emision,
             T0."U_FechaVenta"        AS fecha_venta,
             T0."U_FechaExpiracion"   AS fecha_vencimiento,
+            T0."U_FechaActivacion"   AS fecha_activacion,
             T0."U_Canal"             AS canal,
             T0."U_Sucursal"          AS sucursal,
-            T0."U_ProductoCode"      AS producto_code
+            T0."U_ProductoCode"      AS producto_code,
+            T0."U_Beneficiario"      AS cliente_nombre,
+            T0."U_CedulaBenef"       AS cliente_cedula
         FROM "@DM_GC_FICHA" T0
         WHERE T0."U_CedulaBenef" = ?
-        ORDER BY T0."DocEntry" DESC
-        """,
-        [cedula]
-    )
+    """
+    params = [cedula]
+
+    if lotes:
+        placeholders = ', '.join('?' for _ in lotes)
+        query += f' OR T0."U_Lote" IN ({placeholders})'
+        params.extend(lotes)
+
+    query += ' ORDER BY T0."DocEntry" DESC'
+
+    return (query, params)
 
 
 # ============================================================
