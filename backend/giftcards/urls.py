@@ -16,6 +16,7 @@ urlpatterns = [
     path('giftcards/', views.GiftCardListView.as_view(), name='giftcard-list'),
     path('giftcards/lookup/', views.GiftCardLookupView.as_view(), name='giftcard-lookup'),
     path('giftcards/activate/', views.ActivateGiftCardView.as_view(), name='giftcard-activate'),
+    path('giftcards/movimientos/', views.ClientMovimientosView.as_view(), name='giftcard-movimientos'),
     path('giftcards/<int:giftcard_id>/', views.GiftCardDetailView.as_view(), name='giftcard-detail'),
     path('giftcards/<int:giftcard_id>/transactions/', views.GiftCardTransactionsView.as_view(), name='giftcard-transactions'),
     

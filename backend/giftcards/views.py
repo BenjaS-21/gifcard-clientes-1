@@ -6,6 +6,7 @@ Si USE_MOCK_DATA=true en .env, usa datos de ejemplo.
 """
 
 import hmac
+import logging
 import re
 
 from rest_framework.views import APIView
@@ -27,6 +28,7 @@ from .queries import (
     get_recent_transactions,
     get_top_clients,
     get_lotes,
+    get_transactions_by_codes,
     activate_giftcard,
 )
 from .auth import (
@@ -46,6 +48,11 @@ from .utils import execute_query, execute_query_single, execute_query_paginated,
 
 
 DEBIT_TYPES = {'USO', 'REDENCION', 'USO-PENDIENTE', 'CONSUMO'}
+
+# Códigos por consulta de movimientos (2 parámetros por código; SQL Server acepta 2100)
+TX_BATCH_SIZE = 500
+
+logger = logging.getLogger(__name__)
 
 
 def adjust_saldo_with_pending(giftcard, transactions):
@@ -67,6 +74,40 @@ def adjust_saldo_with_pending(giftcard, transactions):
     saldo_inicial = float(giftcard.get('saldo_inicial', 0) or 0)
     saldo_real = max(saldo_inicial - debitos, 0)
     return {**giftcard, 'saldo': saldo_real}
+
+
+def code_key(code):
+    """Clave para agrupar por código de tarjeta (SQL Server compara sin mayúsculas ni espacios finales)."""
+    return str(code or '').strip().upper()
+
+
+def fetch_transactions_by_code(codes):
+    """
+    Movimientos SAP + KLK de varias tarjetas en una consulta por cada 500 códigos,
+    en lugar de una consulta por tarjeta. Devuelve {code_key(codigo): [tx, ...]}.
+
+    Si la consulta por lotes falla, usa la consulta anterior tarjeta por tarjeta
+    para que el portal siga funcionando.
+    """
+    codes = list(dict.fromkeys(c for c in codes if c))
+    result = {code_key(c): [] for c in codes}
+    if not codes:
+        return result
+    try:
+        for i in range(0, len(codes), TX_BATCH_SIZE):
+            query, params = get_transactions_by_codes(codes[i:i + TX_BATCH_SIZE])
+            for tx in execute_query(query, params):
+                result.setdefault(code_key(tx.get('numero_tarjeta')), []).append(tx)
+    except Exception as e:
+        logger.warning(f"Consulta de movimientos por lotes falló, se usa una por tarjeta: {e}")
+        result = {}
+        for code in codes:
+            try:
+                query, params = get_giftcard_transactions_by_code(code)
+                result[code_key(code)] = execute_query(query, params)
+            except Exception:
+                result[code_key(code)] = []
+    return result
 
 
 def normalize_lote(lote):
@@ -277,13 +318,10 @@ class ClientDetailView(APIView):
             query_gc, params_gc = get_client_giftcards(cedula)
             giftcards = execute_query(query_gc, params_gc)
 
-            # Para cada gift card, cargar transacciones SAP+KLK y ajustar saldo
+            # Cargar transacciones SAP+KLK de todas las tarjetas y ajustar saldo
+            txns_by_code = fetch_transactions_by_code([gc['numero_tarjeta'] for gc in giftcards])
             for gc in giftcards:
-                try:
-                    q_tx, p_tx = get_giftcard_transactions_by_code(gc['numero_tarjeta'])
-                    txns = execute_query(q_tx, p_tx)
-                except Exception:
-                    txns = []
+                txns = txns_by_code.get(code_key(gc['numero_tarjeta']), [])
                 adjusted = adjust_saldo_with_pending(gc, txns)
                 gc['saldo'] = adjusted['saldo']
                 gc['transactions'] = txns
@@ -356,12 +394,9 @@ class GiftCardListView(APIView):
                 query, params = get_client_giftcards(cedula, company_lotes)
                 data = execute_query_paginated(query, params, page, page_size)
                 # Ajustar saldo de cada GC con transacciones pendientes de KLK
+                txns_by_code = fetch_transactions_by_code([gc['numero_tarjeta'] for gc in data.get('results', [])])
                 for gc in data.get('results', []):
-                    try:
-                        q_tx, p_tx = get_giftcard_transactions_by_code(gc['numero_tarjeta'])
-                        txns = execute_query(q_tx, p_tx)
-                    except Exception:
-                        txns = []
+                    txns = txns_by_code.get(code_key(gc['numero_tarjeta']), [])
                     adjusted = adjust_saldo_with_pending(gc, txns)
                     gc['saldo'] = adjusted['saldo']
                     add_card_activity(gc, txns, cedula)
@@ -375,6 +410,47 @@ class GiftCardListView(APIView):
         except Exception as e:
             return Response(
                 {'error': f'Error obteniendo gift cards: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class ClientMovimientosView(APIView):
+    """
+    GET /api/giftcards/movimientos/ — Todos los movimientos de las tarjetas del
+    cliente autenticado (o de los lotes de su empresa), en una sola petición.
+    """
+
+    def get(self, request):
+        cedula = get_client_cedula(request)
+        if not cedula:
+            return client_auth_required()
+
+        if USE_MOCK:
+            cards = [gc for gc in MOCK_GIFTCARDS if card_belongs_to(gc, cedula)]
+            by_id = {gc['id']: gc for gc in cards}
+            movimientos = [
+                {**tx, 'numero_tarjeta': by_id[tx['giftcard_id']]['numero_tarjeta']}
+                for tx in MOCK_TRANSACTIONS if tx['giftcard_id'] in by_id
+            ]
+            return Response({'results': movimientos})
+
+        try:
+            company = find_company_by_rif(cedula)
+            company_lotes = [cl.lote for cl in company.lotes.all()] if company else None
+            query, params = get_client_giftcards(cedula, company_lotes)
+            cards = execute_query(query, params)
+            txns_by_code = fetch_transactions_by_code([gc['numero_tarjeta'] for gc in cards])
+            movimientos = [
+                {**tx, 'numero_tarjeta': gc['numero_tarjeta']}
+                for gc in cards
+                for tx in txns_by_code.get(code_key(gc['numero_tarjeta']), [])
+            ]
+            movimientos.sort(key=lambda tx: str(tx.get('fecha') or ''), reverse=True)
+            return Response({'results': movimientos})
+        except Exception as e:
+            logger.error(f"Error obteniendo movimientos del cliente: {e}")
+            return Response(
+                {'error': 'Error obteniendo movimientos'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 

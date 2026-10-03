@@ -55,6 +55,8 @@ export default {
     }
   },
   getGiftCard: (id) => api.get(`/giftcards/${id}/`),
+  // Movimientos de todas las tarjetas del cliente en una sola petición
+  getMisMovimientos: () => api.get('/giftcards/movimientos/'),
   getGiftCardTransactions: (id) => api.get(`/giftcards/${id}/transactions/`),
   lookupGiftCard: (numero) => api.get('/giftcards/lookup/', { params: { numero } }),
   activateGiftCard: (data) => api.post('/giftcards/activate/', data),
