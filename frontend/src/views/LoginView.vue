@@ -56,6 +56,10 @@
         </button>
       </div>
 
+      <div class="login-vendedor">
+        <router-link to="/vendedor-login">¿Eres vendedor? Entra aquí</router-link>
+      </div>
+
       <div class="login-footer">
         <p>¿Problemas para ingresar? <a href="#" class="btn-link">Contacta soporte</a></p>
       </div>
@@ -67,6 +71,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../services/api'
+import { session } from '../services/session'
 import logoDamasco from '@/assets/img/logo-damasco.svg'
 
 const router = useRouter()
@@ -100,8 +105,7 @@ const handleLogin = async () => {
       localStorage.setItem('userType', 'caja')
       router.push({ path: '/caja', query: { numero: data.numero_tarjeta } })
     } else if (data.tipo === 'cliente') {
-      localStorage.setItem('userType', 'cliente')
-      localStorage.setItem('cliente', JSON.stringify(data.cliente))
+      session.setClient(data.cliente, data.token)
       router.push('/')
     }
   } catch (e) {
@@ -136,6 +140,9 @@ const handleLogin = async () => {
   margin-bottom: var(--space-4); padding: 10px;
   background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.2); border-radius: var(--radius-sm);
 }
+.login-vendedor { margin-top: var(--space-5); text-align: center; font-size: 0.8125rem; }
+.login-vendedor a { color: var(--color-muted); text-decoration: underline; }
+.login-vendedor a:hover { color: var(--color-primary); }
 .login-footer { margin-top: var(--space-8); text-align: center; font-size: 0.875rem; color: var(--color-muted); }
 
 .login-toggle { text-align: center; margin-top: var(--space-5); }

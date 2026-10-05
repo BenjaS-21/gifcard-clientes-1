@@ -3,8 +3,8 @@
     <div class="admin-login-card">
       <div class="login-header">
         <img src="@/assets/img/logo-damasco.svg" alt="Damasco" class="login-logo" />
-        <h1>Panel Administrativo</h1>
-        <p class="login-sub">Gift Cards · Gestión de Templates</p>
+        <h1>Portal de Vendedores</h1>
+        <p class="login-sub">Gift Cards · Descarga para clientes</p>
       </div>
 
       <form @submit.prevent="handleLogin" class="login-form">
@@ -60,7 +60,7 @@ import api from '@/services/api'
 import { session } from '@/services/session'
 
 export default {
-  name: 'AdminLoginView',
+  name: 'VendedorLoginView',
   data() {
     return {
       username: '',
@@ -74,12 +74,13 @@ export default {
       this.error = null
       this.loading = true
       try {
-        const res = await api.adminLogin(this.username, this.password)
-        // El token se guarda en la pestaña, no en la URL
-        session.setAdminToken(res.data.token)
-        this.$router.push('/admin')
+        const res = await api.vendedorLogin(this.username, this.password)
+        session.setVendedor(res.data.token, res.data.nombre)
+        this.$router.push('/vendedor')
       } catch (err) {
-        this.error = err.response?.data?.error || 'Error al conectar con el servidor'
+        this.error = err.response?.status === 429
+          ? 'Demasiados intentos. Espera un minuto.'
+          : (err.response?.data?.error || 'Error al conectar con el servidor')
       } finally {
         this.loading = false
       }

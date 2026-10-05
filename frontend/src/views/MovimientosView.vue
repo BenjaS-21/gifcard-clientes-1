@@ -121,18 +121,10 @@ onMounted(async () => {
     return
   }
   try {
-    const cliente = JSON.parse(clienteStr)
-    const res = await api.getGiftCards({ cedula: cliente.cedula })
-    const cards = res.data.results || []
-    const txPromises = cards.map(gc =>
-      api.getGiftCard(gc.id).then(r => (r.data.transactions || []).map(tx => ({
-        ...tx,
-        tipo: normalizeTipo(tx.tipo),
-        numero_tarjeta: gc.numero_tarjeta || tx.numero_tarjeta
-      })))
-    )
-    const txArrays = await Promise.all(txPromises)
-    allTransactions.value = txArrays.flat().sort((a, b) => new Date(b.fecha) - new Date(a.fecha))
+    const res = await api.getMisMovimientos()
+    allTransactions.value = (res.data.results || [])
+      .map(tx => ({ ...tx, tipo: normalizeTipo(tx.tipo) }))
+      .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))
   } catch (e) { console.error('Error cargando movimientos:', e) }
   finally { loading.value = false }
 })
