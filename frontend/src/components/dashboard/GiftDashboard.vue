@@ -168,7 +168,10 @@
             </table>
           </div>
         </ChartCard>
-        <ChartCard title="Uso según el monto de la tarjeta" subtitle="% de tarjetas vendidas que ya se usaron, por denominación">
+        <ChartCard
+          title="Uso según el monto de la tarjeta"
+          :subtitle="`% de tarjetas vendidas que ya se usaron · los ${data.denominaciones.length} montos más vendidos de ${fmtInt(data.denominaciones_total)}`"
+        >
           <BarList :items="denomItems" :format="fmtPct" :max="100" />
           <template #table>
             <table class="viz-table">
@@ -295,7 +298,7 @@ const ventasItems = computed(() => (data.value?.ventas_mensuales || []).map(m =>
 })))
 const clientesItems = computed(() => (data.value?.clientes || []).map(c => ({
   key: c.nombre + c.identificador, label: c.nombre, value: c.consumido,
-  sub: `${fmtInt(c.tarjetas)} tarjetas · ${fmtPct(c.pct_uso)} usadas · ${fmtPct(c.pct_consumido)} del monto consumido`
+  sub: `${plural(c.tarjetas, 'tarjeta', 'tarjetas')} · ${fmtPct(c.pct_uso)} usadas · ${fmtPct(c.pct_consumido)} del monto consumido`
 })))
 const sucursalItems = computed(() => (data.value?.sucursales || []).map(s => ({
   key: s.sucursal, label: `Sucursal ${s.sucursal}`, value: s.monto, sub: `${fmtInt(s.usos)} usos`
@@ -318,6 +321,7 @@ const moneyFmt = new Intl.NumberFormat('es-VE', { minimumFractionDigits: 2, maxi
 const compactFmt = new Intl.NumberFormat('es-VE', { notation: 'compact', maximumFractionDigits: 1 })
 const fmtInt = (v) => intFmt.format(Math.round(v || 0))
 const fmtMoney = (v) => '$' + moneyFmt.format(v || 0)
+const plural = (n, uno, varios) => `${fmtInt(n)} ${n === 1 ? uno : varios}`
 const fmtCompact = (v) => compactFmt.format(v || 0)
 const fmtMoneyAxis = (v) => (Math.abs(v || 0) >= 10000 ? '$' + compactFmt.format(v) : '$' + intFmt.format(Math.round(v || 0)))
 const fmtMoneyCompact = (v) => (Math.abs(v || 0) >= 10000 ? '$' + compactFmt.format(v) : fmtMoney(v))

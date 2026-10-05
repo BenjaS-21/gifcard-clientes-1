@@ -403,11 +403,13 @@ def build(base, company_id=None, lote=None, periodo='todo'):
             ({'sucursal': s, 'usos': v['usos'], 'monto': round(v['monto'], 2)} for s, v in sucursales.items()),
             key=lambda r: r['monto'], reverse=True
         )[:TOP],
+        # Las denominaciones más vendidas (en SAP hay muchas de centavos con 1 o 2 tarjetas)
         'denominaciones': sorted(
             ({'monto': m, 'vendidas': v['vendidas'], 'con_uso': v['con_uso'], 'pct_uso': pct(v['con_uso'], v['vendidas'])}
              for m, v in denom.items()),
-            key=lambda r: r['monto']
-        ),
+            key=lambda r: (-r['vendidas'], r['monto'])
+        )[:TOP],
+        'denominaciones_total': len(denom),
         'estados': sorted(({'estado': e, 'tarjetas': n} for e, n in estados.items()), key=lambda r: r['tarjetas'], reverse=True),
         'sin_uso_viejas': [card_row(c) for c in sin_uso_viejas[:LIST_LIMIT]],
         'por_vencer': [card_row(c) for c in por_vencer[:LIST_LIMIT]],
