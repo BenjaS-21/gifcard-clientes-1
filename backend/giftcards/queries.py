@@ -342,6 +342,51 @@ def get_recent_transactions(limit=10):
 
 
 # ============================================================
+# QUERIES DEL DASHBOARD (todas las tarjetas y todos los consumos)
+# ============================================================
+
+def get_dashboard_cards():
+    """Una fila por gift card con lo necesario para los indicadores."""
+    return (
+        """
+        SELECT
+            T0."U_Codigo"            AS codigo,
+            T0."U_Estado"            AS estado,
+            T0."U_MontoOriginal"     AS monto,
+            T0."U_Lote"              AS lote,
+            T0."U_Beneficiario"      AS beneficiario,
+            T0."U_CedulaBenef"       AS cedula,
+            T0."U_FechaGeneracion"   AS fecha_emision,
+            T0."U_FechaVenta"        AS fecha_venta,
+            T0."U_FechaExpiracion"   AS fecha_vencimiento
+        FROM "@DM_GC_FICHA" T0
+        """,
+        []
+    )
+
+
+def get_dashboard_usos():
+    """
+    Todos los consumos de gift cards en tienda (KLK), una fila por uso.
+    Son los mismos débitos que get_giftcard_transactions_by_code toma de KLK.
+    """
+    return (
+        """
+        SELECT
+            C2.NTransaccion COLLATE DATABASE_DEFAULT  AS codigo,
+            C1.Fecha                                  AS fecha,
+            C2.MontoUsd                               AS monto,
+            CAST(C1.Sucursal AS NVARCHAR(100))        AS sucursal
+        FROM [KLK_CONSOLIDADO_V2].[dbo].[KLK_COBROHDR] C1
+        INNER JOIN [KLK_CONSOLIDADO_V2].[dbo].[KLK_COBROLINE] C2
+            ON C2.NroCobro = C1.NroCobro AND C2.Sucursal = C1.Sucursal
+        WHERE C2.CuentaSAP COLLATE SQL_Latin1_General_CP1_CI_AS = '2.1.02.01.03.96'
+        """,
+        []
+    )
+
+
+# ============================================================
 # QUERIES DE CLIENTES (derivados de @DM_GC_FICHA)
 # ============================================================
 

@@ -64,6 +64,12 @@ const routes = [
     meta: { layout: 'blank' }
   },
   {
+    path: '/admin/dashboard',
+    name: 'AdminDashboard',
+    component: () => import('../views/AdminDashboardView.vue'),
+    meta: { layout: 'blank' }
+  },
+  {
     path: '/admin/vendedores',
     name: 'AdminVendedores',
     component: () => import('../views/AdminVendedoresView.vue'),

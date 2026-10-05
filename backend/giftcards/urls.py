@@ -33,6 +33,9 @@ urlpatterns = [
     path('vendedor/giftcards/', views.VendedorGiftCardListView.as_view(), name='vendedor-giftcards'),
     path('vendedor/lotes/', views.VendedorLoteListView.as_view(), name='vendedor-lotes'),
 
+    # Dashboard de uso (admin y vendedores)
+    path('reportes/dashboard/', views.GiftCardDashboardView.as_view(), name='reportes-dashboard'),
+
     # Card Templates (público)
     path('card-templates/active/', views.ActiveCardTemplateView.as_view(), name='card-template-active'),
 

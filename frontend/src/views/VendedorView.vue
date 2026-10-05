@@ -15,6 +15,14 @@
     </header>
 
     <main class="vendedor-content">
+      <nav class="vendedor-tabs" role="tablist">
+        <button type="button" role="tab" :aria-selected="vista === 'tarjetas'" :class="{ active: vista === 'tarjetas' }" @click="setVista('tarjetas')">Tarjetas</button>
+        <button type="button" role="tab" :aria-selected="vista === 'dashboard'" :class="{ active: vista === 'dashboard' }" @click="setVista('dashboard')">Dashboard</button>
+      </nav>
+
+      <GiftDashboard v-if="vista === 'dashboard'" />
+
+      <template v-else>
       <!-- Filtros -->
       <section class="toolbar">
         <div class="search-box">
@@ -83,6 +91,7 @@
         <span>Página {{ page }} de {{ totalPages }}</span>
         <button :disabled="page >= totalPages || loading" @click="goTo(page + 1)">Siguiente →</button>
       </nav>
+      </template>
     </main>
 
     <!-- Render fuera de pantalla para la descarga de todas las del filtro -->
@@ -100,17 +109,23 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import api from '../services/api'
 import { session } from '../services/session'
 import { useCardDownload } from '../composables/useCardDownload'
 import GiftCardFace from '../components/ui/GiftCardFace.vue'
+import GiftDashboard from '../components/dashboard/GiftDashboard.vue'
 
 const PAGE_SIZE = 24
 const BULK_MAX = 500
 const ESTADOS = ['GENERADA', 'VENDIDA', 'ACTIVA', 'AGOTADA', 'VENCIDA', 'BLOQUEADA']
 
 const router = useRouter()
+const route = useRoute()
+
+// Pestaña activa (en la URL, para volver a ella al recargar)
+const vista = computed(() => (route.query.vista === 'dashboard' ? 'dashboard' : 'tarjetas'))
+const setVista = (v) => router.replace({ query: { ...route.query, vista: v === 'dashboard' ? 'dashboard' : undefined } })
 const { downloading, bulkProgress, downloadCard, downloadAllCards } = useCardDownload()
 
 const nombre = ref(session.vendedorNombre() || 'Vendedor')
@@ -252,6 +267,9 @@ onMounted(async () => {
 .btn-logout:hover { background: rgba(255,255,255,0.15); border-color: #fff; }
 
 .vendedor-content { max-width: 1240px; margin: 0 auto; padding: 28px 24px 48px; }
+.vendedor-tabs { display: inline-flex; gap: 4px; padding: 4px; margin-bottom: 20px; background: #fff; border: 1px solid #e5e5e5; border-radius: 12px; }
+.vendedor-tabs button { font-family: inherit; font-size: 0.85rem; font-weight: 600; padding: 8px 18px; border: none; border-radius: 9px; background: transparent; color: #666; cursor: pointer; }
+.vendedor-tabs button.active { background: #E1052D; color: #fff; }
 
 /* Filtros */
 .toolbar { display: grid; grid-template-columns: 1fr 220px 200px; gap: 12px; margin-bottom: 18px; }

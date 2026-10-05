@@ -1330,3 +1330,37 @@ class VendedorAdminDetailView(APIView):
             user.is_active = str(request.data.get('is_active')).lower() in ('true', '1')
         user.save()
         return Response(_vendedor_to_dict(user))
+
+
+# ============================================================
+# DASHBOARD — uso de las gift cards (admin y vendedores)
+# ============================================================
+from . import dashboard
+
+
+class GiftCardDashboardView(APIView):
+    """
+    GET /api/reportes/dashboard/?empresa=<id>&lote=<texto>&periodo=todo|anio|90d|30d&refresh=1
+    Indicadores de venta y uso de las gift cards. El filtro de lote es parcial
+    (por ejemplo "POS-C30-01-00000157" agrupa todos sus sublotes).
+    """
+
+    @require_vendedor
+    def get(self, request):
+        periodo = request.query_params.get('periodo') or 'todo'
+        if periodo not in dashboard.PERIODOS:
+            return Response({'error': 'Período inválido'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            company_id = int(request.query_params.get('empresa') or 0) or None
+        except ValueError:
+            return Response({'error': 'Empresa inválida'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            base = dashboard.load_base(force=request.query_params.get('refresh') == '1')
+        except Exception as e:
+            logger.error(f"Dashboard: no se pudieron leer los datos de SAP/KLK: {e}")
+            return Response(
+                {'error': 'No se pudieron leer los datos de SAP. Intenta de nuevo en unos minutos.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+        return Response(dashboard.build(base, company_id, request.query_params.get('lote'), periodo))

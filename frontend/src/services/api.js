@@ -69,6 +69,12 @@ export default {
   vendedorLogin: (username, password) => api.post('/vendedor/login/', { username, password }),
   getVendedorGiftCards: (params = {}) => api.get('/vendedor/giftcards/', { params }),
   getVendedorLotes: () => api.get('/vendedor/lotes/'),
+
+  // Dashboard de uso (vendedor por su sesión; admin con su token)
+  getDashboard: (params = {}, adminToken = null) => api.get('/reportes/dashboard/', {
+    params,
+    headers: adminToken ? { Authorization: `Token ${adminToken}` } : {}
+  }),
   logout: () => api.post('/auth/logout/'),
   checkAuth: () => api.get('/auth/check/'),
 
