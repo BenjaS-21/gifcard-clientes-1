@@ -365,10 +365,35 @@ def get_dashboard_cards():
     )
 
 
+def get_dashboard_usos_por_dia():
+    """
+    Consumos de gift cards en tienda (KLK) agrupados por tarjeta, día y sucursal:
+    menos filas que traer y que procesar. El filtro de CuentaSAP va sin COLLATE
+    para que SQL Server pueda usar un índice en vez de leer toda la tabla.
+    """
+    return (
+        """
+        SELECT
+            C2.NTransaccion                           AS codigo,
+            TRY_CAST(C1.Fecha AS date)                AS fecha,
+            CAST(C1.Sucursal AS NVARCHAR(100))        AS sucursal,
+            SUM(C2.MontoUsd)                          AS monto,
+            COUNT(*)                                  AS usos
+        FROM [KLK_CONSOLIDADO_V2].[dbo].[KLK_COBROHDR] C1
+        INNER JOIN [KLK_CONSOLIDADO_V2].[dbo].[KLK_COBROLINE] C2
+            ON C2.NroCobro = C1.NroCobro AND C2.Sucursal = C1.Sucursal
+        WHERE C2.CuentaSAP = '2.1.02.01.03.96'
+        GROUP BY C2.NTransaccion, TRY_CAST(C1.Fecha AS date), C1.Sucursal
+        """,
+        []
+    )
+
+
 def get_dashboard_usos():
     """
     Todos los consumos de gift cards en tienda (KLK), una fila por uso.
     Son los mismos débitos que get_giftcard_transactions_by_code toma de KLK.
+    Respaldo de get_dashboard_usos_por_dia.
     """
     return (
         """

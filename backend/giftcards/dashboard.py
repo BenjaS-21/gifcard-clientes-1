@@ -17,13 +17,15 @@ from statistics import median
 from django.conf import settings
 
 from .models import CompanyLogo, CompanyLote
-from .queries import get_dashboard_cards, get_dashboard_usos
+from .queries import get_dashboard_cards, get_dashboard_usos, get_dashboard_usos_por_dia
 from .utils import execute_query
 
 logger = logging.getLogger(__name__)
 
-CACHE_SECONDS = 10 * 60           # datos de SAP reutilizados por 10 minutos
+CACHE_SECONDS = 10 * 60           # pasado este tiempo los datos se renuevan en segundo plano
 MIN_REFRESH_SECONDS = 60          # "Actualizar" no vuelve a SAP más de una vez por minuto
+RESULT_SECONDS = 60               # resultado de cada combinación de filtros, guardado en memoria
+RESULT_MAX = 64
 SOLD_STATES = {'VENDIDA', 'ACTIVA', 'AGOTADA', 'VENCIDA', 'BLOQUEADA'}
 MONTHS = 12                       # meses de las series mensuales
 TOP = 15                          # filas de los rankings
@@ -33,8 +35,10 @@ POR_VENCER_DIAS = 30
 
 PERIODOS = {'todo': None, 'anio': 'anio', '90d': 90, '30d': 30}
 
-_cache = {'data': None, 'loaded_at': 0.0}
-_lock = threading.Lock()
+_cache = {'data': None, 'loaded_at': 0.0, 'refreshing': False}
+_lock = threading.Lock()          # una sola lectura de SAP a la vez
+_flag_lock = threading.Lock()     # sólo para la marca de "renovando" (nunca espera a SAP)
+_results = {}   # (versión de datos, filtros) -> (momento, resultado)
 
 
 # ── Utilidades ───────────────────────────────────────────
@@ -74,43 +78,109 @@ def _num(value):
 
 def load_base(force=False):
     """
-    Fichas y consumos, desde la memoria si tienen menos de CACHE_SECONDS.
-    `force` vuelve a SAP (como mucho una vez por MIN_REFRESH_SECONDS).
+    Fichas y consumos para el dashboard, sin hacer esperar a nadie:
+
+    - Datos con menos de CACHE_SECONDS: se usan tal cual.
+    - Datos más viejos: se devuelven igual y se renuevan en segundo plano.
+    - Sin datos (recién arrancado) o "Actualizar" (`force`): se leen de SAP
+      y se espera, pero una sola lectura a la vez para todos los pedidos.
     """
+    data = _cache['data']
+    age = time.time() - _cache['loaded_at']
+    if data is not None and not force:
+        if age >= CACHE_SECONDS:
+            refresh_in_background()
+        return data
+    if data is not None and force and age < MIN_REFRESH_SECONDS:
+        return data
     with _lock:
-        age = time.time() - _cache['loaded_at']
-        fresh = _cache['data'] is not None and age < CACHE_SECONDS
-        if fresh and not (force and age >= MIN_REFRESH_SECONDS):
+        # Otro pedido pudo haber cargado mientras se esperaba el lock
+        if _cache['data'] is not None and time.time() - _cache['loaded_at'] < MIN_REFRESH_SECONDS:
             return _cache['data']
+        return _reload()
 
-        if settings.USE_MOCK_DATA:
-            cards, usos = mock_dataset()
-        else:
-            started = time.time()
-            q_cards, p_cards = get_dashboard_cards()
-            q_usos, p_usos = get_dashboard_usos()
-            cards = execute_query(q_cards, p_cards)
-            usos = execute_query(q_usos, p_usos)
-            logger.info(f"Dashboard: {len(cards)} tarjetas y {len(usos)} usos leídos en {time.time() - started:.1f}s")
 
-        # Normalizar una sola vez: los cálculos por filtro trabajan sobre esto
-        for c in cards:
-            c['key'] = _key(c.get('codigo'))
-            c['lote_key'] = _key(c.get('lote'))
-            c['monto'] = _num(c.get('monto'))
-            c['venta'] = parse_date(c.get('fecha_venta'))
-            c['emision'] = parse_date(c.get('fecha_emision'))
-            c['vence'] = parse_date(c.get('fecha_vencimiento'))
-            c['estado'] = _key(c.get('estado'))
-        for u in usos:
-            u['key'] = _key(u.get('codigo'))
-            u['monto'] = abs(_num(u.get('monto')))
-            u['dia'] = parse_date(u.get('fecha'))
-            u['sucursal'] = str(u.get('sucursal') or '').strip() or 'Sin sucursal'
+def refresh_in_background():
+    """Renueva los datos en un hilo aparte (uno solo a la vez). No bloquea a quien lo pide."""
+    with _flag_lock:
+        if _cache['refreshing']:
+            return
+        _cache['refreshing'] = True
 
-        _cache['data'] = {'cards': cards, 'usos': usos, 'loaded_at': datetime.now().isoformat(timespec='seconds')}
-        _cache['loaded_at'] = time.time()
-        return _cache['data']
+    def run():
+        try:
+            with _lock:
+                # Puede que otro pedido ya los haya renovado mientras tanto
+                if time.time() - _cache['loaded_at'] >= CACHE_SECONDS:
+                    _reload()
+        except Exception as e:
+            logger.error(f"Dashboard: no se pudieron renovar los datos en segundo plano: {e}")
+        finally:
+            with _flag_lock:
+                _cache['refreshing'] = False
+
+    threading.Thread(target=run, name='dashboard-refresh', daemon=True).start()
+
+
+def warm_up():
+    """Precarga al arrancar el servidor, para que el primer visitante no espere a SAP."""
+    try:
+        build(load_base())
+        logger.info('Dashboard: datos precargados')
+    except Exception as e:
+        logger.error(f"Dashboard: no se pudo precargar: {e}")
+
+
+def _fetch_usos():
+    """Consumos agrupados por día; si esa consulta falla en SAP, la consulta fila por fila."""
+    try:
+        query, params = get_dashboard_usos_por_dia()
+        return execute_query(query, params)
+    except Exception as e:
+        logger.warning(f"Dashboard: consulta de consumos por día falló, se usa la consulta por uso: {e}")
+        query, params = get_dashboard_usos()
+        return execute_query(query, params)
+
+
+def _reload():
+    """Lee SAP/KLK (o el mock), normaliza y reemplaza los datos en memoria. Llamar con _lock tomado."""
+    started = time.time()
+    if settings.USE_MOCK_DATA:
+        cards, usos = mock_dataset()
+    else:
+        q_cards, p_cards = get_dashboard_cards()
+        cards = execute_query(q_cards, p_cards)
+        t_cards = time.time() - started
+        usos = _fetch_usos()
+        logger.info(
+            f"Dashboard: {len(cards)} tarjetas en {t_cards:.1f}s y {len(usos)} filas de consumo "
+            f"en {time.time() - started - t_cards:.1f}s"
+        )
+
+    # Normalizar una sola vez: los cálculos por filtro trabajan sobre esto
+    for c in cards:
+        c['key'] = _key(c.get('codigo'))
+        c['lote_key'] = _key(c.get('lote'))
+        c['monto'] = _num(c.get('monto'))
+        c['venta'] = parse_date(c.get('fecha_venta'))
+        c['emision'] = parse_date(c.get('fecha_emision'))
+        c['vence'] = parse_date(c.get('fecha_vencimiento'))
+        c['estado'] = _key(c.get('estado'))
+    for u in usos:
+        u['key'] = _key(u.get('codigo'))
+        u['monto'] = abs(_num(u.get('monto')))
+        u['usos'] = int(u.get('usos') or 1)   # filas agrupadas por día traen la cantidad de usos
+        u['dia'] = parse_date(u.get('fecha'))
+        u['sucursal'] = str(u.get('sucursal') or '').strip() or 'Sin sucursal'
+
+    _cache['data'] = {
+        'cards': cards, 'usos': usos,
+        'loaded_at': datetime.now().isoformat(timespec='seconds'),
+        'load_seconds': round(time.time() - started, 1),
+    }
+    _cache['loaded_at'] = time.time()
+    _results.clear()
+    return _cache['data']
 
 
 def mock_dataset():
@@ -206,7 +276,27 @@ def _month_keys(today, count=MONTHS):
 
 
 def build(base, company_id=None, lote=None, periodo='todo'):
-    """Indicadores para el filtro elegido. `lote` filtra por coincidencia parcial."""
+    """
+    Indicadores para el filtro elegido (`lote` filtra por coincidencia parcial).
+    Cada combinación de filtros se guarda RESULT_SECONDS en memoria.
+    """
+    key = (base['loaded_at'], company_id, _key(lote), periodo)
+    cached = _results.get(key)
+    if cached and time.time() - cached[0] < RESULT_SECONDS:
+        return cached[1]
+    started = time.time()
+    result = _build(base, company_id, lote, periodo)
+    result['tiempos'] = {
+        'calculo_ms': round((time.time() - started) * 1000),
+        'lectura_sap_s': base.get('load_seconds'),
+    }
+    if len(_results) >= RESULT_MAX:
+        _results.clear()
+    _results[key] = (time.time(), result)
+    return result
+
+
+def _build(base, company_id, lote, periodo):
     today = date.today()
     desde = _periodo_desde(periodo, today)
 
@@ -237,7 +327,7 @@ def build(base, company_id=None, lote=None, periodo='todo'):
     for u in usos:
         a = act[u['key']]
         a['consumo'] += u['monto']
-        a['usos'] += 1
+        a['usos'] += u['usos']
         if u['dia']:
             a['primer'] = u['dia'] if not a['primer'] or u['dia'] < a['primer'] else a['primer']
             a['ultimo'] = u['dia'] if not a['ultimo'] or u['dia'] > a['ultimo'] else a['ultimo']
@@ -259,6 +349,7 @@ def build(base, company_id=None, lote=None, periodo='todo'):
     vendidas = [c for c in cards if vendida(c)]
     monto_vendido = sum(c['monto'] for c in vendidas)
     consumido = sum(u['monto'] for u in usos)
+    total_usos = sum(u['usos'] for u in usos)
     con_uso = [c for c in vendidas if act[c['key']]['usos'] > 0]
     agotadas = [c for c in vendidas if c['monto'] > 0 and act[c['key']]['consumo'] >= c['monto'] - 0.01]
 
@@ -291,8 +382,8 @@ def build(base, company_id=None, lote=None, periodo='todo'):
         'consumido': round(consumido, 2),
         'pct_consumido': round(consumido / monto_vendido * 100, 1) if monto_vendido else 0,
         'saldo_pendiente': round(sum(saldo(c) for c in vendidas), 2),
-        'usos': len(usos),
-        'ticket_promedio': round(consumido / len(usos), 2) if usos else 0,
+        'usos': total_usos,
+        'ticket_promedio': round(consumido / total_usos, 2) if total_usos else 0,
         'dias_primer_uso': round(median(dias_primer_uso)) if dias_primer_uso else None,
         'sin_uso_viejas': len(sin_uso_viejas),
         'por_vencer': len(por_vencer),
@@ -308,7 +399,7 @@ def build(base, company_id=None, lote=None, periodo='todo'):
         m = u['dia'].strftime('%Y-%m') if u['dia'] else None
         if m in consumo_mes:
             consumo_mes[m]['monto'] += u['monto']
-            consumo_mes[m]['usos'] += 1
+            consumo_mes[m]['usos'] += u['usos']
     ventas_mes = {m: {'mes': m, 'tarjetas': 0, 'monto': 0.0} for m in meses}
     for c in vendidas:
         m = c['venta'].strftime('%Y-%m') if c['venta'] else None
@@ -352,7 +443,7 @@ def build(base, company_id=None, lote=None, periodo='todo'):
     # Dónde se usan
     sucursales = defaultdict(lambda: {'usos': 0, 'monto': 0.0})
     for u in usos:
-        sucursales[u['sucursal']]['usos'] += 1
+        sucursales[u['sucursal']]['usos'] += u['usos']
         sucursales[u['sucursal']]['monto'] += u['monto']
 
     # Denominaciones
