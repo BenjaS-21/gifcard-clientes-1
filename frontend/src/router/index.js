@@ -40,6 +40,12 @@ const routes = [
     meta: { layout: 'blank' }
   },
   {
+    path: '/vendedor/logos',
+    name: 'VendedorLogos',
+    component: () => import('../views/AdminLogosView.vue'),
+    meta: { layout: 'blank', vendedor: true }
+  },
+  {
     path: '/admin-login',
     name: 'AdminLogin',
     component: () => import('../views/AdminLoginView.vue'),

@@ -18,6 +18,7 @@
       <nav class="vendedor-tabs" role="tablist">
         <button type="button" role="tab" :aria-selected="vista === 'tarjetas'" :class="{ active: vista === 'tarjetas' }" @click="setVista('tarjetas')">Tarjetas</button>
         <button type="button" role="tab" :aria-selected="vista === 'dashboard'" :class="{ active: vista === 'dashboard' }" @click="setVista('dashboard')">Dashboard</button>
+        <router-link to="/vendedor/logos" class="vendedor-tab-link">Logos de Empresas</router-link>
       </nav>
 
       <GiftDashboard v-if="vista === 'dashboard'" />
@@ -271,6 +272,8 @@ onMounted(async () => {
 .vendedor-tabs { display: inline-flex; gap: 4px; padding: 4px; margin-bottom: 20px; background: #fff; border: 1px solid #e5e5e5; border-radius: 12px; }
 .vendedor-tabs button { font-family: inherit; font-size: 0.85rem; font-weight: 600; padding: 8px 18px; border: none; border-radius: 9px; background: transparent; color: #666; cursor: pointer; }
 .vendedor-tabs button.active { background: #E1052D; color: #fff; }
+.vendedor-tab-link { font-size: 0.85rem; font-weight: 600; padding: 8px 18px; border-radius: 9px; color: #666; text-decoration: none; }
+.vendedor-tab-link:hover { color: #E1052D; }
 
 /* Filtros */
 .toolbar { display: grid; grid-template-columns: 1fr 220px 200px; gap: 12px; margin-bottom: 18px; }

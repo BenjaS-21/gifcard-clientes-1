@@ -9,14 +9,16 @@
         </div>
       </div>
       <div class="header-right">
-        <router-link to="/admin" class="btn-back">← Panel Admin</router-link>
+        <router-link :to="modoVendedor ? '/vendedor' : '/admin'" class="btn-back">
+          ← {{ modoVendedor ? 'Portal de Vendedores' : 'Panel Admin' }}
+        </router-link>
         <button class="btn-logout" @click="logout">Cerrar Sesión</button>
       </div>
     </header>
 
     <div v-if="!token" class="logos-empty">
       <h2>Acceso no autorizado</h2>
-      <router-link to="/admin-login" class="btn-primary">Iniciar Sesión</router-link>
+      <router-link :to="modoVendedor ? '/vendedor-login' : '/admin-login'" class="btn-primary">Iniciar Sesión</router-link>
     </div>
 
     <main v-else class="logos-content">
@@ -176,7 +178,7 @@
                 <span v-if="!saving">Guardar</span>
                 <span v-else>Guardando...</span>
               </button>
-              <button v-if="form.id" class="btn-delete" @click="remove" :disabled="saving">Eliminar empresa</button>
+              <button v-if="form.id && !modoVendedor" class="btn-delete" @click="remove" :disabled="saving">Eliminar empresa</button>
             </div>
             <div v-if="msg" class="save-msg" :class="msgType">{{ msg }}</div>
           </section>
@@ -230,6 +232,13 @@ export default {
     }
   },
   computed: {
+    // Misma pantalla para vendedores (/vendedor/logos), sin eliminar empresas
+    modoVendedor() {
+      return !!this.$route.meta.vendedor
+    },
+    adminToken() {
+      return this.modoVendedor ? null : this.token
+    },
     cardBgStyle() {
       return this.cardBgUrl ? { backgroundImage: `url(${this.cardBgUrl})` } : {}
     },
@@ -271,7 +280,8 @@ export default {
     }
   },
   created() {
-    this.token = takeAdminToken(this.$route, this.$router)
+    // El vendedor entra con su sesión; el admin con su token
+    this.token = this.modoVendedor ? session.vendedorToken() : takeAdminToken(this.$route, this.$router)
     if (this.token) {
       this.loadCompanies()
       this.loadLotes()
@@ -283,13 +293,18 @@ export default {
   },
   methods: {
     logout() {
-      session.clearAdmin()
-      this.$router.push('/admin-login')
+      if (this.modoVendedor) {
+        session.clearVendedor()
+        this.$router.push('/vendedor-login')
+      } else {
+        session.clearAdmin()
+        this.$router.push('/admin-login')
+      }
     },
     async loadCompanies() {
       this.loading = true
       try {
-        const res = await api.getCompanies(this.token)
+        const res = await api.getCompanies(this.adminToken)
         this.companies = res.data
       } catch (err) {
         if (err.response?.status === 401) this.token = null
@@ -299,7 +314,7 @@ export default {
     },
     async loadLotes() {
       try {
-        const res = await api.getLotes(this.token)
+        const res = await api.getLotes(this.adminToken)
         this.availableLotes = res.data
       } catch (e) { /* sin sugerencias: los lotes se escriben a mano */ }
     },
@@ -439,8 +454,8 @@ export default {
         if (this.form.file) fd.append('logo', this.form.file)
 
         const res = this.form.id
-          ? await api.updateCompany(this.token, this.form.id, fd)
-          : await api.createCompany(this.token, fd)
+          ? await api.updateCompany(this.adminToken, this.form.id, fd)
+          : await api.createCompany(this.adminToken, fd)
         await this.loadCompanies()
         this.selectCompany(res.data)
         this.showMsg(`"${res.data.name}" guardada. Sus tarjetas ya salen con el logo.`, 'success')
@@ -455,7 +470,7 @@ export default {
       if (!confirm(`¿Eliminar "${this.form.name}" y su logo? Sus tarjetas dejarán de mostrarlo.`)) return
       this.saving = true
       try {
-        await api.deleteCompany(this.token, this.form.id)
+        await api.deleteCompany(this.adminToken, this.form.id)
         await this.loadCompanies()
         this.newCompany()
       } catch (err) {

@@ -1041,14 +1041,15 @@ class CompanyLogoListView(APIView):
     """
     GET  /api/admin/companies/ — Lista de empresas con su logo y lotes
     POST /api/admin/companies/ — Crear empresa con logo (multipart)
+    Admin y vendedores.
     """
 
-    @require_admin_token
+    @require_vendedor
     def get(self, request):
         companies = CompanyLogo.objects.prefetch_related('lotes')
         return Response([_company_to_dict(request, c) for c in companies])
 
-    @require_admin_token
+    @require_vendedor
     def post(self, request):
         name = (request.data.get('name') or '').strip()
         logo = request.FILES.get('logo')
@@ -1078,11 +1079,11 @@ class CompanyLogoListView(APIView):
 
 class CompanyLogoDetailView(APIView):
     """
-    PATCH  /api/admin/companies/<id>/ — Actualizar nombre, logo, lotes, posición o tamaño
-    DELETE /api/admin/companies/<id>/ — Eliminar empresa y su logo
+    PATCH  /api/admin/companies/<id>/ — Actualizar nombre, logo, lotes, posición o tamaño (admin y vendedores)
+    DELETE /api/admin/companies/<id>/ — Eliminar empresa y su logo (sólo admin: quita el logo de todas sus tarjetas)
     """
 
-    @require_admin_token
+    @require_vendedor
     def patch(self, request, company_id):
         try:
             company = CompanyLogo.objects.get(pk=company_id)
@@ -1160,9 +1161,9 @@ def lotes_response():
 
 
 class LoteListView(APIView):
-    """GET /api/admin/lotes/ — Lotes existentes en SAP, para asociarlos a una empresa."""
+    """GET /api/admin/lotes/ — Lotes existentes en SAP, para asociarlos a una empresa (admin y vendedores)."""
 
-    @require_admin_token
+    @require_vendedor
     def get(self, request):
         return lotes_response()
 

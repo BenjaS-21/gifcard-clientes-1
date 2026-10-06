@@ -35,6 +35,8 @@ api.interceptors.response.use((res) => res, (err) => {
   return Promise.reject(err)
 })
 
+const adminHeaders = (token) => (token ? { Authorization: `Token ${token}` } : {})
+
 export default {
   // Dashboard
   getDashboardStats: () => api.get('/dashboard/stats/'),
@@ -105,27 +107,16 @@ export default {
   }),
 
   // Logos de empresas compradoras (por lote)
-  getCompanies: (token) => api.get('/admin/companies/', {
-    headers: { Authorization: `Token ${token}` }
-  }),
+  // Admin con su token; vendedor sin token (va por su sesión, X-Vendedor-Token)
+  getCompanies: (token) => api.get('/admin/companies/', { headers: adminHeaders(token) }),
   createCompany: (token, formData) => api.post('/admin/companies/', formData, {
-    headers: {
-      Authorization: `Token ${token}`,
-      'Content-Type': 'multipart/form-data'
-    }
+    headers: { ...adminHeaders(token), 'Content-Type': 'multipart/form-data' }
   }),
   updateCompany: (token, id, formData) => api.patch(`/admin/companies/${id}/`, formData, {
-    headers: {
-      Authorization: `Token ${token}`,
-      'Content-Type': 'multipart/form-data'
-    }
+    headers: { ...adminHeaders(token), 'Content-Type': 'multipart/form-data' }
   }),
-  deleteCompany: (token, id) => api.delete(`/admin/companies/${id}/`, {
-    headers: { Authorization: `Token ${token}` }
-  }),
-  getLotes: (token) => api.get('/admin/lotes/', {
-    headers: { Authorization: `Token ${token}` }
-  }),
+  deleteCompany: (token, id) => api.delete(`/admin/companies/${id}/`, { headers: adminHeaders(token) }),
+  getLotes: (token) => api.get('/admin/lotes/', { headers: adminHeaders(token) }),
 
   // Gestión de vendedores (admin)
   getVendedores: (token) => api.get('/admin/vendedores/', {
