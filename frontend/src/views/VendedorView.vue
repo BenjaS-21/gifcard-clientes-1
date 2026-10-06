@@ -113,6 +113,7 @@ import { useRoute, useRouter } from 'vue-router'
 import api from '../services/api'
 import { session } from '../services/session'
 import { useCardDownload } from '../composables/useCardDownload'
+import { secureUrl } from '../services/secureUrl'
 import GiftCardFace from '../components/ui/GiftCardFace.vue'
 import GiftDashboard from '../components/dashboard/GiftDashboard.vue'
 
@@ -243,7 +244,7 @@ onMounted(async () => {
   }
   try {
     const tpl = await api.getActiveTemplate()
-    if (tpl.data.active) bgUrl.value = tpl.data.image_url
+    if (tpl.data.active) bgUrl.value = secureUrl(tpl.data.image_url)
   } catch (e) { /* usa imagen por defecto del CSS */ }
   load()
   try {

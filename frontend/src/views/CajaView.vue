@@ -314,6 +314,7 @@ import { useRoute } from 'vue-router'
 import api from '../services/api'
 import { session } from '../services/session'
 import { useCardDownload } from '../composables/useCardDownload'
+import { secureUrl } from '../services/secureUrl'
 import CardCompanyLogo from '../components/ui/CardCompanyLogo.vue'
 
 // ── PIN Gate (el PIN se valida en el servidor) ──
@@ -383,7 +384,7 @@ onMounted(async () => {
   // Load active template
   try {
     const tpl = await api.getActiveTemplate()
-    if (tpl.data.active) cardBgUrl.value = tpl.data.image_url
+    if (tpl.data.active) cardBgUrl.value = secureUrl(tpl.data.image_url)
   } catch (e) { /* usa imagen por defecto */ }
   const num = route.query.numero
   if (num && cajaAuthed.value) {

@@ -189,6 +189,7 @@
 <script>
 import api from '@/services/api'
 import { session, takeAdminToken } from '@/services/session'
+import { secureUrl } from '@/services/secureUrl'
 
 const LOGO_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml']
 const LOGO_MAX_BYTES = 5 * 1024 * 1024
@@ -305,7 +306,7 @@ export default {
     async loadTemplate() {
       try {
         const tpl = await api.getActiveTemplate()
-        if (tpl.data.active) this.cardBgUrl = tpl.data.image_url
+        if (tpl.data.active) this.cardBgUrl = secureUrl(tpl.data.image_url)
       } catch (e) { /* usa imagen por defecto del CSS */ }
     },
     releaseBlob() {

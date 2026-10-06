@@ -15,6 +15,15 @@ const EXPORT_OPTIONS = {
   filter: (node) => !(node.dataset && 'exportIgnore' in node.dataset)
 }
 
+// html-to-image rechaza con un Event cuando no puede cargar una imagen (logo o fondo)
+function errorReason(e) {
+  if (typeof Event !== 'undefined' && e instanceof Event) {
+    const src = e.target?.src || e.target?.currentSrc || ''
+    return `no se pudo cargar una imagen de la tarjeta${src ? ` (${src.split('?')[0].slice(0, 120)})` : ''}`
+  }
+  return e?.message || String(e)
+}
+
 function saveFile(href, filename) {
   const link = document.createElement('a')
   link.download = filename
@@ -36,7 +45,7 @@ export function useCardDownload() {
       saveFile(dataUrl, `giftcard-damasco-${numero || 'tarjeta'}.png`)
     } catch (e) {
       console.error('Error generando imagen de la tarjeta', e)
-      alert('No se pudo generar la imagen de la tarjeta. Intenta de nuevo.')
+      alert(`No se pudo generar la imagen de la tarjeta: ${errorReason(e)}`)
     } finally {
       downloading.value = null
     }
@@ -68,7 +77,7 @@ export function useCardDownload() {
       setTimeout(() => URL.revokeObjectURL(url), 10000)
     } catch (e) {
       console.error('Error generando el ZIP de tarjetas', e)
-      alert('No se pudieron descargar las tarjetas. Intenta de nuevo.')
+      alert(`No se pudieron descargar las tarjetas: ${errorReason(e)}`)
     } finally {
       bulkProgress.value = null
     }

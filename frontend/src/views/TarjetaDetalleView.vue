@@ -181,6 +181,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../services/api'
 import { useCardDownload } from '../composables/useCardDownload'
+import { secureUrl } from '../services/secureUrl'
 import CardCompanyLogo from '../components/ui/CardCompanyLogo.vue'
 
 const route = useRoute()
@@ -193,7 +194,7 @@ const cardBgStyle = computed(() => cardBgUrl.value ? { backgroundImage: `url(${c
 onMounted(async () => {
   try {
     const tpl = await api.getActiveTemplate()
-    if (tpl.data.active) cardBgUrl.value = tpl.data.image_url
+    if (tpl.data.active) cardBgUrl.value = secureUrl(tpl.data.image_url)
   } catch (e) { /* usa imagen por defecto */ }
   try {
     const res = await api.getGiftCard(route.params.id)

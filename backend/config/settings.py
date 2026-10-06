@@ -26,6 +26,10 @@ if not SECRET_KEY:
 
 DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
+# Cloudflare (túnel) termina el https y avisa con X-Forwarded-Proto: así Django
+# arma las URLs absolutas (logos, fondos) con https y no con http.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 ALLOWED_HOSTS = env_list('ALLOWED_HOSTS', 'giftcardbackend.aplicacionesdamasco.com,localhost,127.0.0.1')
 
 # PIN de las cajeras para entrar a /caja (se valida en el servidor)
